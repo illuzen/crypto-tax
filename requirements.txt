@@ -1,0 +1,3 @@
+tqdm
+PyPDF2
+reportlab
