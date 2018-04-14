@@ -1,0 +1,6 @@
+derived_data/
+.DS_Store
+input_csvs/
+logs/
+__pycache__/
+
