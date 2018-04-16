@@ -51,7 +51,7 @@ def initialize():
     my_addresses = []
     income_spend_file = open('%s/incomespend.csv' % derived_folder, 'w')
     income_spend_sheet = csv.writer(income_spend_file)
-    income_spend_sheet.writerow(['id','currency','amount','cost_basis','price','timestamp','direction', 'origin_date'])
+    income_spend_sheet.writerow(['id','currency','amount','cost_basis','price','timestamp','direction', 'origin_date', 'category'])
     likekind_file = open('%s/likekind.csv' % derived_folder, 'w')
     likekind_sheet = csv.writer(likekind_file)
     likekind_sheet.writerow(['id','previous_id','received','received_amount','received_price','relinquished','relinquished_amount','relinquished_price','swap_date','last_trade_date','origin_date','cost_basis'])
@@ -79,12 +79,8 @@ def process_exchange_order(txs, i):
         out_tx = tx1 if tx1['direction'] == 'out' else tx2
         in_tx = tx1 if tx1['direction'] == 'in' else tx2
 
-        if out_tx['currency'] == 'USD':
-            #print('purchase')
-            handle_single(in_tx)
-        elif in_tx['currency'] == 'USD':
-            #print('spend')
-            handle_single(out_tx)
+        if out_tx['currency'] == 'USD' or in_tx['currency'] == 'USD':
+            handle_purchase_sale(out_tx,in_tx)
         else:
             #print('likekind')
             handle_likekind(out_tx, in_tx)
@@ -113,10 +109,8 @@ def process_off_exchange(txs, i):
     #print(tx2)
     # if close in time and dollar amount, probably likekind or self transfer
     if found:
-        if tx1['currency'] == 'USD':
-            handle_single(tx2)
-        elif tx2['currency'] == 'USD':
-            handle_single(tx1)
+        if tx1['currency'] == 'USD' or tx2['currency'] == 'USD':
+            handle_purchase_sale(tx1,tx2)
         elif different_currency:
             handle_likekind(tx1, tx2)
         else:
@@ -151,6 +145,13 @@ def process_txs(data):
     likekind_file.close()
     print(balances)
 
+def handle_purchase_sale(tx1, tx2):
+    incoming = tx1 if tx1['direction'] == 'in' else tx2
+    outgoing = tx2 if tx2['direction'] == 'out' else tx1
+    if incoming['currency'] == 'USD':
+        handle_spend(outgoing)
+    elif outgoing['currency'] == 'USD':
+        handle_purchase(tx1,tx2)
 
 def handle_single(tx):
     if tx['direction'] == 'in':
@@ -161,9 +162,28 @@ def handle_single(tx):
         raise Exception('Unknown direction type %s' % tx)
 
 # we purchased or received crypto
+def handle_purchase(tx1,tx2):
+    usd = tx1 if tx1['currency'] == 'USD' else tx2
+    crypto = tx2 if tx1['currency'] == 'USD' else tx1
+    logging.info('treating txs %d and %d as purchase' % (tx1['index'], tx2['index']))
+    maybe_print('treating txs %d and %d as purchase' % (tx1['index'], tx2['index']))
+    crypto['category'] = 'purchase'
+    crypto['paired'] = usd['index']
+    usd['category'] = 'purchase'
+    usd['paired'] = crypto['paired']
+    crypto['cost_basis'] = crypto['dollar']
+    crypto['origin_date'] = crypto['timestamp']
+    crypto['id'] = get_new_tx_id()
+    q_in = get_queue_for_currency(crypto['currency'])
+    q_in.insert(0, crypto)
+    update_balance(crypto['currency'], crypto['amount'])
+    #write_income_spend(crypto)
+
+# we purchased or received crypto
 def handle_income(income):
     logging.info('Handling income tx %s' % income)
     maybe_print('treating tx %d as income' % income['index'])
+    income['category'] = 'income'
     income['cost_basis'] = income['dollar']
     income['origin_date'] = income['timestamp']
     income['id'] = get_new_tx_id()
@@ -205,6 +225,7 @@ def handle_spend(spend):
         else:
             spend_piece_amount = spend_amount_left
             cost_basis = tx_out['cost_basis'] * spend_piece_amount / tx_out['amount']
+            tx_out['cost_basis'] -= cost_basis
             tx_out['amount'] -= spend_piece_amount
 
         spend_amount_left -= spend_piece_amount
@@ -214,6 +235,7 @@ def handle_spend(spend):
         income_spend = {
             'id':tx_out['id'],
             'currency':currency,
+            'category':'spend',
             'amount': spend_piece_amount,
             'cost_basis': cost_basis,
             'price':price,
@@ -224,10 +246,12 @@ def handle_spend(spend):
         write_income_spend(income_spend)
 
 
-
 def handle_self_transfer(spend,income):
     maybe_print('pairing self transfer: %d with %d' % (spend['index'], income['index']))
-    pass
+    spend['category'] = 'self transfer'
+    spend['paired'] = income['index']
+    income['category'] = 'self transfer'
+    income['paired'] = spend['index']
 
 def handle_likekind(tx1, tx2):
     maybe_print('pairing likekind txs %d and %d' % (tx1['index'], tx2['index']))
@@ -348,7 +372,8 @@ def write_income_spend(income_spend):
         income_spend['price'],
         datetime.datetime.fromtimestamp(income_spend['timestamp']).strftime(time_format),
         income_spend['direction'],
-        income_spend['origin_date']
+        datetime.datetime.fromtimestamp(income_spend['origin_date']).strftime(time_format),
+        income_spend['category']
     ]
     income_spend_sheet.writerow(row)
 
