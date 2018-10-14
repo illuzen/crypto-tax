@@ -2,13 +2,28 @@ import requests
 import json
 import logging
 import datetime
-logging.basicConfig(filename='logs/all.log',level=logging.DEBUG)
+from config import *
 
 prices = {}
+cmc_listings = None
+
+
+def get_all_cmc_listings():
+    global cmc_listings
+    if cmc_listings is None:
+        url = 'https://api.coinmarketcap.com/v2/listings/'
+        cmc_listings = json.loads(requests.get(url).text)
+    return cmc_listings
+
+
+def get_all_cmc_slugs():
+    listings = get_all_cmc_listings()
+    slugs = {x['symbol']: x['website_slug'] for x in listings['data']}
+    return slugs
+
 
 def get_name_symbol(symbol):
     symbol = symbol.strip()
-    logging.info('Getting name for %s' % (symbol))
 
     if symbol == 'ETH':
         return 'ethereum'
@@ -84,6 +99,8 @@ def get_name_symbol(symbol):
         return 'tether'
     elif symbol == 'OMNI':
         return 'omni'
+    elif symbol == 'MNX':
+        return 'minexcoin'
     elif symbol == 'DCR':
         return 'decred'
     elif symbol == 'EXP':
@@ -172,11 +189,12 @@ def get_name_symbol(symbol):
         return 'usd'
     else:
         msg = 'unrecognized symbol: %s' % symbol
-        print(msg)
-        raise Exception(msg)
+        #print(msg)
+        raise KeyError(msg)
+
 
 def get_price(symbol,date):
-    logging.info('getting price for %s %s' % (symbol, date))
+    maybe_print('getting price for %s %s' % (symbol, date))
     target_string = date.strftime('%Y/%m/%d')
     if symbol == 'USD':
         return 1
@@ -189,37 +207,45 @@ def get_price(symbol,date):
         return get_price_cmc(symbol,target_string)
     except UserWarning as e:
         print(e)
-        return get_price_bic(symbol,target_string)
+        try:
+            return get_price_bic(symbol,target_string)
+        except Exception as e:
+            print('Could not find %s price: %s' % (symbol, e))
+            # where dat nun cum frum??
+            return None
+
 
 def get_price_bic(symbol,date):
     currency = get_name_symbol(symbol)
-
+    if currency is None: return None
     url = 'https://bitinfocharts.com/%s/' % currency
     res = requests.get(url).text
     start = 'else { var dydata = '
     end = '; } new Dygraph'
     remove = 'new Date('
-    logging.info('making request to %s' % url)
+    maybe_print('making request to %s' % url)
 
-    datastring = res.split(start)[1].split(end)[0]
+    splits = res.split(start)
+    if len(splits) == 1: return None
+    datastring = splits[1].split(end)[0]
     datastring = datastring.replace(remove, '').replace(')', '').replace("'", '"')
     data = json.loads(datastring)
     data = { d: x[1] for d,x,_ in data }
     prices[symbol] = data
     if date not in prices[symbol]:
-        msg = 'no price data for %s %s on bitinfocharts' % (currency,date)
-        logging.warn(msg)
-        raise LookupError(msg)
+        #msg = 'no price data for %s %s on bitinfocharts' % (currency,date)
+        return None
 
     return prices[symbol][date]
 
-def get_price_cmc(symbol,date):
-    currency = get_name_symbol(symbol).replace(' ','-')
 
+def get_price_cmc(symbol,date):
+    slug_map = get_all_cmc_slugs()
+    slug = slug_map.get(symbol,symbol)
     target_format = '%Y/%m/%d'
-    url = 'https://coinmarketcap.com/currencies/%s/historical-data/?start=20130428&end=20180410' % currency
+    url = 'https://coinmarketcap.com/currencies/%s/historical-data/?start=20130428&end=20180410' % slug
     text = requests.get(url).text
-    logging.info('making request to %s' % url)
+    maybe_print('making request to %s' % url)
 
     a = text.split('<td class="text-left">')
     input_format = '%b %d, %Y'
@@ -231,10 +257,7 @@ def get_price_cmc(symbol,date):
         data[date_string] = float(row.split('>')[8].replace('</td',''))
     prices[symbol] = data
 
-
     if date not in prices[symbol]:
-        msg = 'no price data for %s %s on coinmarketcap' % (currency,date)
-        logging.warn(msg)
-        raise UserWarning(msg)
+        raise UserWarning()
 
     return prices[symbol][date]

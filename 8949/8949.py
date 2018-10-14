@@ -9,7 +9,6 @@ from datetime import datetime
 
 merger = PdfFileMerger()
 reader = csv.reader(open('../derived_data/incomespend.csv','r'))
-#reader = csv.reader(open('./likekind.csv','r'))
 header = reader.__next__()
 
 # id,currency,amount,cost_basis,price,timestamp,direction,origin_date,category
@@ -28,7 +27,15 @@ rows_per_page = 14
 time_fmt = '%Y/%m/%d'
 second_page_offset = 36
 
-#### fill in ####
+#################
+#################
+#################
+#################
+### FILL OUT ####
+#################
+#################
+#################
+#################
 name = ''
 ssn = ''
 
@@ -110,7 +117,7 @@ def draw_first_pages(rows):
     return draw_pages(rows, short_term=True)
 
 
-# first page has 14 rows
+# second page has 14 rows
 def draw_second_pages(rows):
     return draw_pages(rows, short_term=False)
 

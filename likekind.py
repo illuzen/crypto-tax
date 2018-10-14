@@ -17,18 +17,14 @@ from tqdm import tqdm
 import logging
 import json
 from pprint import pprint
-
-logging.basicConfig(filename='logs/all.log',level=logging.DEBUG)
-derived_folder = './derived_data'
-cutoff_year = datetime.datetime(2018,1,1)
+from config import *
+import os
 
 
-# 1 day in seconds
-one_day = 24 * 60 * 60
-one_minute = 55 * 1000
 
-dollar_epsilon = 100
-dollar_pct = .2
+anomalies = []
+
+
 #queues = { 'BTC': [], 'ETH': [], 'DASH': [], 'BCH': [] }
 # queues = {}
 # balances = {}
@@ -56,11 +52,13 @@ def initialize():
     likekind_sheet = csv.writer(likekind_file)
     likekind_sheet.writerow(['id','previous_id','received','received_amount','received_price','relinquished','relinquished_amount','relinquished_price','swap_date','last_trade_date','origin_date','cost_basis'])
 
+
 def sort_txs_by_date(txs):
     sort = sorted(txs, key= lambda x: x['timestamp'])
     for i,tx in enumerate(sort):
         tx['index'] = i
     return sort
+
 
 def process_exchange_order(txs, i):
     tx1 = txs[i]
@@ -88,6 +86,7 @@ def process_exchange_order(txs, i):
         txs.remove(tx2)
     else:
         raise Exception('no order found to pair with %s' % tx1)
+
 
 def process_off_exchange(txs, i):
     # look at next in tx to determine if likekind or not
@@ -123,13 +122,14 @@ def process_off_exchange(txs, i):
         if tx1['currency'] != 'USD':
             handle_single(tx1)
 
+
 def process_txs(data):
     txs = copy.deepcopy(sort_txs_by_date(data))
+    json.dump(txs, open('./derived_data/transactions-final-%d.json' % datetime.datetime.now().timestamp(), 'w'), indent=4, separators=(',', ':'))
+
     i = 0
     while i < len(txs):
         tx1 = txs[i]
-        #print(tx1)
-        tx2 = {}
         if tx1['timestamp'] > cutoff_year.timestamp():
             logging.info('reached tx past cutoff year %s. Stopping' % cutoff_year)
             break
@@ -145,6 +145,7 @@ def process_txs(data):
     likekind_file.close()
     print(balances)
 
+
 def handle_purchase_sale(tx1, tx2):
     incoming = tx1 if tx1['direction'] == 'in' else tx2
     outgoing = tx2 if tx2['direction'] == 'out' else tx1
@@ -152,6 +153,7 @@ def handle_purchase_sale(tx1, tx2):
         handle_spend(outgoing)
     elif outgoing['currency'] == 'USD':
         handle_purchase(tx1,tx2)
+
 
 def handle_single(tx):
     if tx['direction'] == 'in':
@@ -192,31 +194,26 @@ def handle_income(income):
     update_balance(income['currency'], income['amount'])
     write_income_spend(income)
 
+
 def handle_spend(spend):
     maybe_print('treating tx %d as spend' % spend['index'])
     price = spend['price']
     spend_amount_left = spend['amount']
     timestamp = spend['timestamp']
-
+    out_currency = spend['currency']
 
     currency = spend['currency']
-#    if 'cost_basis' not in spend:
-#        spend['cost_basis'] = spend['dollar']
     q_out = get_queue_for_currency(currency)
     update_balance(currency, -1 * spend['amount'])
-
-    if len(q_out) == 0:
-        pprint(spend)
-        pprint(balances)
 
     while spend_amount_left > 0:
         if len(q_out) == 0:
             msg = "Empty queue for currency %s" % out_currency
-            print(msg)
-            logging.warn(msg)
+            maybe_print(msg)
             pprint(spend)
-            pprint(income)
             pprint(balances)
+            anomalies.append([spend])
+            return
         tx_out = q_out[-1]
         if spend_amount_left >= tx_out['amount']:
             spend_piece_amount = tx_out['amount']
@@ -253,6 +250,7 @@ def handle_self_transfer(spend,income):
     income['category'] = 'self transfer'
     income['paired'] = spend['index']
 
+
 def handle_likekind(tx1, tx2):
     maybe_print('pairing likekind txs %d and %d' % (tx1['index'], tx2['index']))
     spend = tx1 if tx1['direction'] == 'out' else tx2
@@ -269,16 +267,19 @@ def handle_likekind(tx1, tx2):
     in_price = income['price']
     spend_amount_left = out_amount
     income_amount_left = in_amount
+    maybe_print('Spending %f %s, have %f' % (out_amount, out_currency, balances[out_currency]))
+    maybe_print('Receiving %f %s, have %f' % (in_amount, in_currency, balances[in_currency]))
 
     # deplete items from the out queue until spend is accounted for
     while spend_amount_left > 0:
         if len(q_out) == 0:
             msg = "Empty queue for currency %s" % out_currency
-            print(msg)
-            logging.warn(msg)
+            maybe_print(msg)
             pprint(spend)
             pprint(income)
             pprint(balances)
+            anomalies.append([tx1,tx2])
+            return
         tx_out = q_out[-1]
         if spend_amount_left > tx_out['amount']:
             spend_piece_amount = tx_out['amount']
@@ -299,20 +300,10 @@ def handle_likekind(tx1, tx2):
             tx_out['amount'] -= spend_piece_amount
             final = True
 
-        #income_piece_amount = round(income_piece_amount, 8)
-        #spend_piece_amount = round(spend_piece_amount, 8)
         income_amount_left -= income_piece_amount
         spend_amount_left -= spend_piece_amount
-        if spend_amount_left < 1e-8:
+        if spend_amount_left < 5e-6:
             spend_amount_left = 0
-
-        # if out_currency == 'FCT' or in_currency == 'FCT':
-        #     print('final %s' % final)
-        #     print('tx_out[amount] %s' % tx_out['amount'])
-        #     print('spend_amount_left %s' % spend_amount_left)
-        #     print('income_amount_left %s' % income_amount_left)
-        #     print('spend_piece_amount %s' % spend_piece_amount)
-        #     print('income_piece_amount %s' % income_piece_amount)
 
         income_piece = copy.deepcopy(income)
         income_piece['id'] = get_new_tx_id()
@@ -338,6 +329,7 @@ def handle_likekind(tx1, tx2):
         }
         write_likekind(likekind)
 
+
 def get_queue_for_currency(currency):
     try:
         return queues[currency]
@@ -345,16 +337,17 @@ def get_queue_for_currency(currency):
         queues[currency] = []
         return queues[currency]
 
+
 def update_balance(currency, amount):
     try:
         balances[currency] += amount
     except KeyError:
         balances[currency] = amount
 
-    balances[currency] = round(balances[currency], 8)
+    balances[currency] = round(balances[currency], 7)
 
     if balances[currency] < 0:
-        logging.warn('Negative balance %s' % currency)
+        maybe_print('Negative balance %s: %f' % (currency, balances[currency]))
 
 
 def get_new_tx_id():
@@ -439,9 +432,15 @@ def collect_addresses():
     return my_addresses
 
 
-
 def collect_transactions():
     txs = []
+    failed = []
+
+    g = glob.glob('./input_csvs/cointracker/*')
+    for path in tqdm(g):
+        parsed, not_parsed = parsers.parse_coin_tracker(path)
+        txs.extend(parsed)
+        failed.extend(not_parsed)
 
     g = glob.glob('./input_csvs/etherscan/*')
     for path in tqdm(g):
@@ -476,17 +475,21 @@ def collect_transactions():
     for tx in txs:
         tx['date'] = datetime.datetime.fromtimestamp(tx['timestamp']).strftime('%Y/%m/%d')
 
+    if len(failed) > 0: json.dump(failed, open('%s/failed.tsv' % derived_folder, 'w'))
+
     return txs
 
-def maybe_print(s):
-    if True:
-        print(s)
 
 def start_to_finish():
     initialize()
-    try:
-        txs = json.load(open('./derived_data/transactions-final.json', 'r'))
-    except FileNotFoundError:
+
+    if os.path.isfile(final_file):
+        txs = json.load(open(final_file, 'r'))
+    else:
         txs = collect_transactions()
         json.dump(txs, open('./derived_data/transactions.json', 'w'), indent=4, separators=(',',':'))
     process_txs(txs)
+
+
+if __name__ == "__main__":
+    start_to_finish()

@@ -5,10 +5,10 @@ from reportlab.lib.pagesizes import letter
 from glob import glob
 import csv
 from tqdm import tqdm
+from config import *
 
 merger = PdfFileMerger()
-#reader = csv.reader(open('../derived_data/likekind.csv','r'))
-reader = csv.reader(open('./likekind.csv','r'))
+reader = csv.reader(open('../%s/likekind.csv' % derived_folder,'r'))
 header = reader.__next__()
 
 rcvd_idx = header.index('received')
@@ -23,6 +23,21 @@ cost_basis_idx = header.index('cost_basis')
 start = 0
 i = start
 max_digits = 2
+
+
+#################
+#################
+#################
+#################
+### FILL OUT ####
+#################
+#################
+#################
+#################
+
+name = ''
+ssn = ''
+
 
 def get_first_page_text(row):
     rlqd_desc = '%s %s' % (row[rlqd_amt_idx], row[rlqd_idx])
@@ -39,6 +54,8 @@ def get_first_page_text(row):
     packet = io.BytesIO()
     # create a new PDF with Reportlab
     can = canvas.Canvas(packet, pagesize=letter)
+    can.drawString(50, 688, name)
+    can.drawString(500, 688, ssn)
     can.drawString(100, 626, rlqd_desc)
     can.drawString(100, 590, rcvd_desc)
     # MM/DD/YYYY
@@ -46,10 +63,13 @@ def get_first_page_text(row):
     can.drawString(478, 547, swap_date)
     can.drawString(478, 517, swap_date)
     can.drawString(478, 487, swap_date)
+    can.drawString(542, 447, 'X')
+
     can.save()
     #move to the beginning of the StringIO buffer
     packet.seek(0)
     return PdfFileReader(packet)
+
 
 def get_second_page_text(row):
     rlqd_fmv = float(row[rlqd_price_idx]) * float(row[rlqd_amt_idx])
@@ -69,6 +89,8 @@ def get_second_page_text(row):
     packet = io.BytesIO()
     # create a new PDF with Reportlab
     can = canvas.Canvas(packet, pagesize=letter)
+    can.drawString(50, 724, name)
+    can.drawString(500, 724, ssn)
     can.drawString(369, 664, rlqd_fmv)
     can.drawString(369, 650, cost_basis)
     can.drawString(484, 627, rlqd_gain)
@@ -87,6 +109,7 @@ def get_second_page_text(row):
     #move to the beginning of the StringIO buffer
     packet.seek(0)
     return PdfFileReader(packet)
+
 
 def make_8824(row):
     output = PdfFileWriter()
@@ -117,6 +140,7 @@ for row in tqdm(reader):
         continue
 
     make_8824(row)
+
 
 g = glob('./intermediate/*.pdf')
 for path in tqdm(g):
