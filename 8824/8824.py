@@ -23,7 +23,6 @@ origin_idx = header.index('origin_date')
 cost_basis_idx = header.index('cost_basis')
 max_digits = 2
 
-
 #################
 #################
 #################
@@ -128,7 +127,7 @@ def make_8824(row):
     page.mergePage(text1.getPage(0))
     output.addPage(page)
 
-    filename = './intermediate/%d.pdf' % datetime.datetime.now().timestamp()
+    filename = './intermediate/%s-%s-%s-%s.pdf' % (row[swap_idx].replace('/', '-'),row[rcvd_idx], row[rlqd_idx], datetime.datetime.now().timestamp())
     outputStream = open(filename, "wb")
     output.write(outputStream)
     outputStream.close()
