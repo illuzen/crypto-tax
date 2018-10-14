@@ -6,6 +6,7 @@ from glob import glob
 import csv
 from tqdm import tqdm
 from config import *
+from multiprocessing.pool import Pool
 
 merger = PdfFileMerger()
 reader = csv.reader(open('../%s/likekind.csv' % derived_folder,'r'))
@@ -20,8 +21,6 @@ rlqd_price_idx = header.index('relinquished_price')
 swap_idx = header.index('swap_date')
 origin_idx = header.index('origin_date')
 cost_basis_idx = header.index('cost_basis')
-start = 0
-i = start
 max_digits = 2
 
 
@@ -112,6 +111,8 @@ def get_second_page_text(row):
 
 
 def make_8824(row):
+    if float(row[rcvd_amt_idx]) < 1e-2 or float(row[rlqd_amt_idx]) < 1e-2: return
+
     output = PdfFileWriter()
     template = PdfFileReader(open('./8824-blank.pdf', 'rb'))
 
@@ -127,24 +128,24 @@ def make_8824(row):
     page.mergePage(text1.getPage(0))
     output.addPage(page)
 
-
-    global i
-    outputStream = open('./intermediate/%d.pdf' % i, "wb")
-    i+=1
+    filename = './intermediate/%d.pdf' % datetime.datetime.now().timestamp()
+    outputStream = open(filename, "wb")
     output.write(outputStream)
     outputStream.close()
+    maybe_print('Wrote file %s' % filename)
 
 
-for row in tqdm(reader):
-    if float(row[rcvd_amt_idx]) < 1e-2 or float(row[rlqd_amt_idx]) < 1e-2:
-        continue
-
-    make_8824(row)
+if parallel:
+    with Pool(num_processes) as p:
+        _ = p.map(make_8824, reader)
+else:
+    for row in tqdm(reader):
+        make_8824(row)
 
 
 g = glob('./intermediate/*.pdf')
 for path in tqdm(g):
     merger.append(PdfFileReader(open(path, 'rb')))
 
-print('Merging all pdfs into one')
+maybe_print('Merging all %d pdfs into one' % len(g))
 merger.write("output.pdf")

@@ -13,6 +13,9 @@ one_minute = 55 * 1000
 dollar_epsilon = 100
 dollar_pct = .2
 
+num_processes = 4
+parallel = True
+
 
 def maybe_open(path):
     maybe_print('Trying to open file %s' % path)
