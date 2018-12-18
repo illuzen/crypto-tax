@@ -19,7 +19,7 @@ import json
 from pprint import pprint
 from config import *
 import os
-
+from prices import prices
 
 
 anomalies = []
@@ -40,9 +40,11 @@ def initialize():
     global income_spend_file
     global likekind_file
     global tx_id
+    global spend_queues
 
     tx_id = 0
     queues = {}
+    spend_queues = {}
     balances = {}
     my_addresses = []
     income_spend_file = open('%s/incomespend.csv' % derived_folder, 'w')
@@ -94,13 +96,19 @@ def process_off_exchange(txs, i):
     found = False
     for j in range(i+1, len(txs)):
         tx2 = txs[j]
-        close_time = abs(tx2['timestamp'] - tx1['timestamp']) < one_day
-        close_dollar = abs(tx2['dollar'] - tx1['dollar']) / max(tx2['dollar'], tx1['dollar']) < dollar_pct
+
+        # is this a different currency we are looking at?
         different_currency = tx2['currency'] != tx1['currency']
+        if not different_currency: continue
+
+        # are we close enough to tx1 in time?
+        close_time = abs(tx2['timestamp'] - tx1['timestamp']) < one_day
+        if not close_time: break
+
+        # must be different directions, neither is exchange order and close enough dollar amounts
         different_direction = tx2['direction'] != tx1['direction']
+        close_dollar = abs(tx2['dollar'] - tx1['dollar']) / max(tx2['dollar'], tx1['dollar']) < dollar_pct
         not_order = 'order' not in tx2['notes']
-        if not close_time:
-            break
         if different_direction and not_order and close_dollar:
             found = True
             break
@@ -125,7 +133,7 @@ def process_off_exchange(txs, i):
 
 def process_txs(data):
     txs = copy.deepcopy(sort_txs_by_date(data))
-    json.dump(txs, open('./derived_data/transactions-final-%d.json' % datetime.datetime.now().timestamp(), 'w'), indent=4, separators=(',', ':'))
+    json.dump(txs, open('%s/transactions-final-%d.json' % (derived_folder,datetime.datetime.now().timestamp()), 'w'), indent=4, separators=(',', ':'))
 
     i = 0
     while i < len(txs):
@@ -181,10 +189,11 @@ def handle_purchase(tx1,tx2):
     update_balance(crypto['currency'], crypto['amount'])
     #write_income_spend(crypto)
 
+
 # we purchased or received crypto
 def handle_income(income):
     logging.info('Handling income tx %s' % income)
-    maybe_print('treating tx %d as income' % income['index'])
+    #maybe_print('treating tx %d as income' % income['index'])
     income['category'] = 'income'
     income['cost_basis'] = income['dollar']
     income['origin_date'] = income['timestamp']
@@ -196,7 +205,7 @@ def handle_income(income):
 
 
 def handle_spend(spend):
-    maybe_print('treating tx %d as spend' % spend['index'])
+    #maybe_print('treating tx %d as spend' % spend['index'])
     price = spend['price']
     spend_amount_left = spend['amount']
     timestamp = spend['timestamp']
@@ -204,6 +213,7 @@ def handle_spend(spend):
 
     currency = spend['currency']
     q_out = get_queue_for_currency(currency)
+    #assert_q_sorted(q_out)
     update_balance(currency, -1 * spend['amount'])
 
     while spend_amount_left > 0:
@@ -244,7 +254,7 @@ def handle_spend(spend):
 
 
 def handle_self_transfer(spend,income):
-    maybe_print('pairing self transfer: %d with %d' % (spend['index'], income['index']))
+    #maybe_print('pairing self transfer: %d with %d' % (spend['index'], income['index']))
     spend['category'] = 'self transfer'
     spend['paired'] = income['index']
     income['category'] = 'self transfer'
@@ -252,7 +262,7 @@ def handle_self_transfer(spend,income):
 
 
 def handle_likekind(tx1, tx2):
-    maybe_print('pairing likekind txs %d and %d' % (tx1['index'], tx2['index']))
+    #maybe_print('pairing likekind txs %d and %d' % (tx1['index'], tx2['index']))
     spend = tx1 if tx1['direction'] == 'out' else tx2
     income = tx1 if tx1['direction'] == 'in' else tx2
     out_currency = spend['currency']
@@ -286,19 +296,16 @@ def handle_likekind(tx1, tx2):
             income_piece_amount = in_amount * spend_piece_amount / out_amount
             cost_basis = tx_out['cost_basis']
             q_out.pop()
-            final = False
         elif spend_amount_left == tx_out['amount']:
             spend_piece_amount = spend_amount_left
             income_piece_amount = income_amount_left
             cost_basis = tx_out['cost_basis']
             q_out.pop()
-            final = True
         else:
             spend_piece_amount = spend_amount_left
             income_piece_amount = income_amount_left
             cost_basis = tx_out['cost_basis'] * spend_piece_amount / tx_out['amount']
             tx_out['amount'] -= spend_piece_amount
-            final = True
 
         income_amount_left -= income_piece_amount
         spend_amount_left -= spend_piece_amount
@@ -355,6 +362,7 @@ def get_new_tx_id():
     tx_id += 1
     return tx_id
 
+
 def write_income_spend(income_spend):
     time_format = '%Y/%m/%d'
     row = [
@@ -369,6 +377,7 @@ def write_income_spend(income_spend):
         income_spend['category']
     ]
     income_spend_sheet.writerow(row)
+
 
 def write_likekind(likekind):
     time_format = '%Y/%m/%d'
@@ -388,14 +397,15 @@ def write_likekind(likekind):
     ]
     likekind_sheet.writerow(row)
 
+
 def collect_addresses():
     # first get the exports
-    g = glob.glob('./input_csvs/etherscan/export*')
+    g = glob.glob('%s/etherscan/export*' % input_folder)
     for path in tqdm(g):
         addr = path.split('export-')[1].split(' (')[0].split('.csv')[0]
         my_addresses.append([addr.lower(), 'ETH'])
 
-    f = open('./input_csvs/trezor/BCH_Account.csv')
+    f = open('%s/trezor/BCH_Account.csv' % input_folder)
     first_row = True
     for row in f:
         if first_row:
@@ -404,7 +414,7 @@ def collect_addresses():
         date,time,tx_hash,address,tx_type,value,tx_total,fee,balance = row.split(',')
         my_addresses.append([address, 'BCH'])
 
-    f = open('./input_csvs/trezor/BTC_Account.csv')
+    f = open('%s/trezor/BTC_Account.csv' % input_folder)
     first_row = True
     for row in f:
         if first_row:
@@ -413,7 +423,7 @@ def collect_addresses():
         date,time,tx_hash,address,tx_type,value,tx_total,fee,balance = row.split(',')
         my_addresses.append([address, 'BTC'])
 
-    g = glob.glob('./input_csvs/trezor/DASH_Account*')
+    g = glob.glob('%s/trezor/DASH_Account*' % input_folder)
     for path in tqdm(g):
         f = open(path, 'r')
         first_row = True
@@ -424,7 +434,7 @@ def collect_addresses():
             date,time,tx_hash,address,tx_type,value,tx_total,fee,balance = row.split(',')
             my_addresses.append([address, 'DASH'])
 
-    f = open('./derived_data/addresses.csv', 'w')
+    f = open('%s/addresses.csv' % derived_folder, 'w')
     writer = csv.writer(f)
     for addr in my_addresses:
         writer.writerow(addr)
@@ -436,40 +446,40 @@ def collect_transactions():
     txs = []
     failed = []
 
-    g = glob.glob('./input_csvs/cointracker/*')
-    for path in tqdm(g):
+    g = glob.glob('%s/cointracker/*' % input_folder)
+    for path in g:
         parsed, not_parsed = parsers.parse_coin_tracker(path)
         txs.extend(parsed)
         failed.extend(not_parsed)
 
-    g = glob.glob('./input_csvs/etherscan/*')
-    for path in tqdm(g):
+    g = glob.glob('%s/etherscan/*' % input_folder)
+    for path in g:
         txs.extend(parsers.parse_etherscan(path))
 
-    g = glob.glob('./input_csvs/ethplorer/*')
-    for path in tqdm(g):
+    g = glob.glob('%s/ethplorer/*' % input_folder)
+    for path in g:
         txs.extend(parsers.parse_ethplorer(path))
 
-    txs.extend(parsers.parse_bittrex_orders('./input_csvs/bittrex/bittrex-fullOrders.csv'))
-    txs.extend(parsers.parse_bittrex_deposits('./input_csvs/bittrex/bittrex-depositHistory.json'))
-    txs.extend(parsers.parse_bittrex_withdrawals('./input_csvs/bittrex/bittrex-withdrawalHistory.json'))
+    txs.extend(parsers.parse_bittrex_orders('%s/bittrex/bittrex-fullOrders.csv' % input_folder))
+    txs.extend(parsers.parse_bittrex_deposits('%s/bittrex/bittrex-depositHistory.json' % input_folder))
+    txs.extend(parsers.parse_bittrex_withdrawals('%s/bittrex/bittrex-withdrawalHistory.json' % input_folder))
 
-    txs.extend(parsers.parse_poloniex_orders('./input_csvs/poloniex/poloniex-tradeHistory.csv'))
-    txs.extend(parsers.parse_poloniex_deposits('./input_csvs/poloniex/poloniex-depositHistory.csv'))
-    txs.extend(parsers.parse_poloniex_withdrawals('./input_csvs/poloniex/poloniex-withdrawalHistory.csv'))
+    txs.extend(parsers.parse_poloniex_orders('%s/poloniex/poloniex-tradeHistory.csv' % input_folder))
+    txs.extend(parsers.parse_poloniex_deposits('%s/poloniex/poloniex-depositHistory.csv' % input_folder))
+    txs.extend(parsers.parse_poloniex_withdrawals('%s/poloniex/poloniex-withdrawalHistory.csv' % input_folder))
 
-    txs.extend(parsers.parse_kraken('./input_csvs/kraken/ledgers.csv'))
+    txs.extend(parsers.parse_kraken('%s/kraken/ledgers.csv' % input_folder))
 
-    g = glob.glob('./input_csvs/gdax/*')
-    for path in tqdm(g):
+    g = glob.glob('%s/gdax/*' % input_folder)
+    for path in g:
         txs.extend(parsers.parse_gdax(path))
 
-    g = glob.glob('./input_csvs/trezor/*')
-    for path in tqdm(g):
+    g = glob.glob('%s/trezor/*' % input_folder)
+    for path in g:
         txs.extend(parsers.parse_trezor(path))
 
-    g = glob.glob('./input_csvs/dash_core/*')
-    for path in tqdm(g):
+    g = glob.glob('%s/dash_core/*' % input_folder)
+    for path in g:
         txs.extend(parsers.parse_dash_core(path))
 
     for tx in txs:
@@ -480,16 +490,39 @@ def collect_transactions():
     return txs
 
 
+def dump_txs(txs):
+    maybe_print('Writing txs to disk')
+    json.dump(txs, open('%s/transactions.json' % derived_folder, 'w'), indent=4, separators=(',', ':'))
+
+
+def dump_prices(p):
+    # prices[symbol][date_string]
+    maybe_print('Writing prices to disk')
+    with open('./derived_data/prices/prices.csv', 'w') as file:
+        for symbol in p:
+            for date_string in p[symbol]:
+                price = p[symbol][date_string]
+                file.write('%s,%s,%s\n' % (symbol, date_string, price))
+
+
+# def assert_q_sorted(q):
+#     sorted_q = sorted(q, key=lambda x: x['timestamp'], reverse=True)
+#     if sorted_q != q:
+#         print('badbad')
+
+
 def start_to_finish():
     initialize()
 
-    if os.path.isfile(final_file):
+    if os.path.isfile(final_file) and not reload_data:
         txs = json.load(open(final_file, 'r'))
     else:
         txs = collect_transactions()
-        json.dump(txs, open('./derived_data/transactions.json', 'w'), indent=4, separators=(',',':'))
+        dump_txs(txs)
+        dump_prices(prices)
     process_txs(txs)
 
 
 if __name__ == "__main__":
     start_to_finish()
+    print('Dun')

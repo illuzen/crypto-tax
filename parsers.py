@@ -438,14 +438,12 @@ def parse_gdax(path):
         dt = [int(x) for x in date]
         dt = datetime.datetime(*dt)
 
-
         try:
             price = prices.get_price(currency, dt)
         except Exception as e:
             logging.warn(e)
             print(e)
             continue
-
 
         if entry_type == 'deposit':
             notes = 'gdax deposit'
@@ -520,7 +518,6 @@ def parse_kraken(path):
         except Exception as e:
             logging.warn(e)
             continue
-
 
         if entry_type == 'deposit':
             notes = 'kraken deposit'
@@ -659,11 +656,14 @@ def parse_coin_tracker(path):
     txs = []
     failed_rows = []
     for i, row in enumerate(lines):
-        type,buy_amt,buy_cur,sell_amt,sell_cur,fee_amt,fee_cur,exchange,_,_,date = row.split('\t')
+        type,buy_amt,buy_cur,sell_amt,sell_cur,fee_amt,fee_cur,exchange,group,_,date = row.split('\t')
         date = date.replace('\n', '')
         dt = datetime.datetime.strptime(date, '%Y-%m-%d %H:%M:%S')
         if dt > cutoff_year:
             maybe_print('Skipping row %d because date %s is out of range' % (i, date))
+            continue
+        if group == 'Margin' and ignore_margins:
+            maybe_print('Skipping row %d because margin trade' % row)
             continue
         if buy_cur == 'STR': buy_cur = 'XLM'
         if sell_cur == 'STR': sell_cur = 'XLM'
@@ -716,7 +716,6 @@ def parse_coin_tracker(path):
                 'notes': 'gsheet order'
             })
 
-
         elif type == 'Withdrawal':
             # not taxable event
             pass
@@ -725,6 +724,9 @@ def parse_coin_tracker(path):
             pass
         elif type == 'Income' or type == 'Mining':
             buy_price = prices.get_price(buy_cur, dt)
+            if buy_price is None:
+                print('Cannot get price for %s on %s for Income, using 0 as price for cost_basis' % (buy_cur, dt))
+                buy_price = 0
             buy_dollar = buy_price * buy_amt
             buy_dir = 'in'
             txs.append({

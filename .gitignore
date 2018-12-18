@@ -1,6 +1,6 @@
 .idea
 .DS_Store
-input_csvs/
+input_data/
 derived_data/
 logs/
 __pycache__/
@@ -9,3 +9,5 @@ __pycache__/
 8824/credentials.py
 8949/*.pdf
 8949/intermediate/
+credentials/
+

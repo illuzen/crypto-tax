@@ -2,10 +2,16 @@ import requests
 import json
 import logging
 import datetime
+from dateutil import parser as dateparser
 from config import *
+from time import sleep
+from glob import glob
+import pandas as pd
 
 prices = {}
+unknown_symbol = {}
 cmc_listings = None
+target_format = '%Y/%m/%d'
 
 
 def get_all_cmc_listings():
@@ -27,6 +33,8 @@ def get_name_symbol(symbol):
 
     if symbol == 'ETH':
         return 'ethereum'
+    elif symbol == 'ARCH':
+        return 'archcoin'
     elif symbol == 'BTC':
         return 'bitcoin'
     elif symbol == 'LTC':
@@ -53,6 +61,8 @@ def get_name_symbol(symbol):
         return 'dash'
     elif symbol == 'BCH' or symbol == 'BCC':
         return 'bitcoin cash'
+    elif symbol == 'XDQ':
+        return 'dirac'
     elif symbol == 'LUN':
         return 'lunyr'
     elif symbol == 'OMG':
@@ -194,25 +204,50 @@ def get_name_symbol(symbol):
 
 
 def get_price(symbol,date):
-    maybe_print('getting price for %s %s' % (symbol, date))
-    target_string = date.strftime('%Y/%m/%d')
+    #maybe_print('getting price for %s %s' % (symbol, date))
+    target_date = date.strftime('%Y/%m/%d')
     if symbol == 'USD':
         return 1
 
     # cache
     if symbol in prices:
-        if target_string in prices[symbol]:
-            return prices[symbol][target_string]
-    try:
-        return get_price_cmc(symbol,target_string)
-    except UserWarning as e:
-        print(e)
-        try:
-            return get_price_bic(symbol,target_string)
-        except Exception as e:
-            print('Could not find %s price: %s' % (symbol, e))
-            # where dat nun cum frum??
+        if target_date in prices[symbol]:
+            return prices[symbol][target_date]
+        elif unknown_symbol.get(symbol):
             return None
+
+    try:
+        return get_price_rr(symbol, target_date)
+    except Exception:
+        print('Failed to get price %s %s from rootmont' % (symbol, target_date))
+
+    try:
+        return get_price_cmc(symbol,target_date)
+    except UserWarning:
+        print('Failed to get price %s %s from cmc' % (symbol, target_date))
+
+    try:
+        return get_price_bic(symbol,target_date)
+    except Exception:
+        print('Failed to get price %s %s from bitinfo' % (symbol, target_date))
+        unknown_symbol[symbol] = True
+        # where dat nun cum frum??
+        return None
+
+
+def get_price_rr(symbol, date):
+    url = 'https://???'
+    res = requests.get(url)
+    if res.status_code != 200:
+        raise Exception('Could not find symbol %s in rootmont price api' % symbol)
+    data = json.loads(res.text)
+    name = list(data.keys())[0]
+    prices[symbol] = {
+        dateparser.parse(timestring.split('T')[0]).strftime(target_format): price
+        for timestring, price in data[name].items()
+        if price > 0
+    }
+    return prices[symbol][date]
 
 
 def get_price_bic(symbol,date):
@@ -242,11 +277,23 @@ def get_price_bic(symbol,date):
 def get_price_cmc(symbol,date):
     slug_map = get_all_cmc_slugs()
     slug = slug_map.get(symbol,symbol)
-    target_format = '%Y/%m/%d'
+    # sleep in case cmc is blocking us
+    sleep(1)
     url = 'https://coinmarketcap.com/currencies/%s/historical-data/?start=20130428&end=20180410' % slug
-    text = requests.get(url).text
     maybe_print('making request to %s' % url)
+    text = requests.get(url).text
+    #print(text)
+    data = parse_cmc_text(text)
+    # prices[symbol][date_string] = price
+    prices[symbol] = data
 
+    if date not in prices[symbol]:
+        raise UserWarning()
+
+    return prices[symbol][date]
+
+
+def parse_cmc_text(text):
     a = text.split('<td class="text-left">')
     input_format = '%b %d, %Y'
     data = {}
@@ -255,9 +302,39 @@ def get_price_cmc(symbol,date):
         extract_date = datetime.datetime.strptime(row.split('<')[0], input_format)
         date_string = extract_date.strftime(target_format)
         data[date_string] = float(row.split('>')[8].replace('</td',''))
-    prices[symbol] = data
+    return data
 
-    if date not in prices[symbol]:
-        raise UserWarning()
 
-    return prices[symbol][date]
+def interpolate_prices():
+    prices = pd.read_csv('./derived_data/prices/prices.csv', index_col=None)
+    prices.columns = ['name', 'datestring', 'price']
+    prices['p'] = prices['price'].apply(lambda x: pd.np.float64(x) if x!='None'  else pd.np.nan)
+    prices['price'] = prices['p'].interpolate()
+    prices.drop(['p'], axis=1, inplace=True)
+    prices.to_csv('./derived_data/prices/prices_interpolated.csv', index=False)
+
+
+def collect_cmc_files():
+    htmls = glob('./cmc_prices/*')
+    for path in htmls:
+        symbol = path.split('/')[2].split('.')[0]
+        f = open(path, 'r')
+        try:
+            prices[symbol].update(parse_cmc_text(f.read()))
+        except KeyError:
+            prices[symbol] = parse_cmc_text(f.read())
+
+
+def collect_saved_prices():
+    file = open('./derived_data/prices/prices.csv', 'r')
+    file.__next__()
+    for line in file.readlines():
+        symbol, date_string, price = line.split(',')
+        try:
+            prices[symbol][date_string] = float(price)
+        except KeyError:
+            prices[symbol] = {date_string: float(price)}
+
+
+collect_cmc_files()
+collect_saved_prices()

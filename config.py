@@ -1,10 +1,12 @@
 import datetime
 import os
+from credentials.credentials import initials
 
-cutoff_year = datetime.datetime(2018,1,1)
-derived_folder = './derived_data'
-final_file = './derived_data/transactions-final.json'
-
+target_year = 2017
+cutoff_year = datetime.datetime(target_year + 1,1,1)
+derived_folder = './derived_data/%s' % initials
+final_file = '%s/transactions-final.json' % derived_folder
+input_folder = './input_data/%s' % initials
 
 # 1 day in seconds
 one_day = 24 * 60 * 60
@@ -14,8 +16,10 @@ dollar_epsilon = 100
 dollar_pct = .2
 
 num_processes = 4
-parallel = True
-
+parallel = False
+ignore_margins = True
+reload_data = True
+likekind_threshold = 1000
 
 def maybe_open(path):
     maybe_print('Trying to open file %s' % path)

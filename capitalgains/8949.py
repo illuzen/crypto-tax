@@ -5,10 +5,11 @@ from reportlab.lib.pagesizes import letter
 from glob import glob
 import csv
 from tqdm import tqdm
-from datetime import datetime
+from config import *
+from credentials.credentials import name, ssn
 
 merger = PdfFileMerger()
-reader = csv.reader(open('../derived_data/incomespend.csv','r'))
+reader = csv.reader(open('%s/incomespend.csv' % derived_folder,'r'))
 header = reader.__next__()
 
 # id,currency,amount,cost_basis,price,timestamp,direction,origin_date,category
@@ -27,24 +28,12 @@ rows_per_page = 14
 time_fmt = '%Y/%m/%d'
 second_page_offset = 36
 
-#################
-#################
-#################
-#################
-### FILL OUT ####
-#################
-#################
-#################
-#################
-name = ''
-ssn = ''
-
 
 def extract_row(row):
     d = {}
     d['prop_sold'] = '%s %s' % (row[amount_idx], row[currency_idx])
-    d['origin_date'] = datetime.strptime(row[origin_idx],time_fmt).strftime('%m/%d/%y')
-    d['sold_date'] = datetime.strptime(row[sold_date_idx],time_fmt).strftime('%m/%d/%y')
+    d['origin_date'] = datetime.datetime.strptime(row[origin_idx],time_fmt).strftime('%m/%d/%y')
+    d['sold_date'] = datetime.datetime.strptime(row[sold_date_idx],time_fmt).strftime('%m/%d/%y')
     usd_rcvd = round(float(row[amount_idx]) * float(row[price_idx]))
     cost_basis = round(float(row[cost_basis_idx]))
     diff = usd_rcvd - cost_basis
@@ -58,8 +47,8 @@ def extract_row(row):
 
 
 def is_long_term(row):
-    spend_date = datetime.strptime(row[sold_date_idx], time_fmt)
-    origin_date = datetime.strptime(row[origin_idx], time_fmt)
+    spend_date = datetime.datetime.strptime(row[sold_date_idx], time_fmt)
+    origin_date = datetime.datetime.strptime(row[origin_idx], time_fmt)
     return (spend_date - origin_date).days > 364
 
 
@@ -74,10 +63,14 @@ def draw_pages(rows, short_term):
     for row in tqdm(rows):
         if row[category_idx] != 'spend': continue
         if is_long_term(row) is short_term: continue
+        if int(row[sold_date_idx].split('/')[0]) != target_year: continue
         d = extract_row(row)
         if d['diff'] == '0': continue
-        if int(d['usd_rcvd']) == 0: continue
-        if int(d['cost_basis']) == 0: continue
+        #if int(d['usd_rcvd']) == 0: continue
+        #if int(d['cost_basis']) == 0: continue
+
+        #if float(d['usd_rcvd']) < 1e-2: continue
+        #if float(d['cost_basis']) < 1e-2: continue
 
         # if we filled up a page, append it and start over
         if rowNum % rows_per_page == 0:
@@ -89,11 +82,10 @@ def draw_pages(rows, short_term):
             can.drawString(500, 688 + offset, ssn)
             can.drawString(50, 518 + offset, 'X')
 
-
         yCoord = 430 - ((rowNum % 14) * 24) + offset
         rowNum += 1
-        totals['cost_basis'] += int(d['cost_basis'])
-        totals['usd_rcvd'] += int(d['usd_rcvd'])
+        totals['cost_basis'] += float(d['cost_basis'])
+        totals['usd_rcvd'] += float(d['usd_rcvd'])
 
         can.drawString(50, yCoord, d['prop_sold'])
         can.drawString(175, yCoord, d['origin_date'])
@@ -124,7 +116,7 @@ def draw_second_pages(rows):
 
 def make_8949(reader):
 
-    reader = csv.reader(open('../derived_data/incomespend.csv','r'))
+    reader = csv.reader(open('%s/incomespend.csv' % derived_folder,'r'))
     reader.__next__()
 
     first_pages, totals = draw_first_pages(reader)
@@ -132,24 +124,24 @@ def make_8949(reader):
     # add the "watermark" (which is the new pdf) on the existing page
     # read your existing PDF
     for pageNum, first_page in enumerate(tqdm(first_pages)):
-        template = PdfFileReader(open('./8949-blank.pdf', 'rb'))
+        template = PdfFileReader(open('./capitalgains/8949-blank.pdf', 'rb'))
         output = PdfFileWriter()
-        outputStream = open('./intermediate/first-%d.pdf' % pageNum, "wb")
+        outputStream = open('%s/intermediate-8949/first-%d.pdf' % (derived_folder, pageNum), "wb")
         page = template.getPage(0)
         page.mergePage(first_page.getPage(0))
         output.addPage(page)
         output.write(outputStream)
         outputStream.close()
 
-    reader = csv.reader(open('../derived_data/incomespend.csv','r'))
+    reader = csv.reader(open('%s/incomespend.csv' % derived_folder,'r'))
     reader.__next__()
 
     second_pages,totals = draw_second_pages(reader)
     print('long term totals', totals)
     for pageNum, second_page in enumerate(tqdm(second_pages)):
-        template = PdfFileReader(open('./8949-blank.pdf', 'rb'))
+        template = PdfFileReader(open('./capitalgains/8949-blank.pdf', 'rb'))
         output = PdfFileWriter()
-        outputStream = open('./intermediate/second-%d.pdf' % pageNum, "wb")
+        outputStream = open('%s/intermediate-8949/second-%d.pdf' % (derived_folder, pageNum), "wb")
         page = template.getPage(1)
         page.mergePage(second_page.getPage(0))
         output.addPage(page)
@@ -161,9 +153,9 @@ def make_8949(reader):
 make_8949(reader)
 
 
-g = glob('./intermediate/*.pdf')
+g = glob('%s/intermediate-8949/*.pdf' % derived_folder)
 for path in tqdm(g):
     merger.append(PdfFileReader(open(path, 'rb')))
 
 print('Merging all pdfs into one')
-merger.write("8949-complete-%s.pdf" % datetime.today().strftime('%Y-%m-%d'))
+merger.write("%s/8949-complete-%s.pdf" % (derived_folder, datetime.datetime.now().timestamp()))
