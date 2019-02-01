@@ -121,6 +121,13 @@ def make_8949(reader):
 
     first_pages, totals = draw_first_pages(reader)
     print('short term totals', totals)
+
+    reader = csv.reader(open('%s/incomespend.csv' % derived_folder,'r'))
+    reader.__next__()
+
+    second_pages,totals = draw_second_pages(reader)
+    print('long term totals', totals)
+
     # add the "watermark" (which is the new pdf) on the existing page
     # read your existing PDF
     for pageNum, first_page in enumerate(tqdm(first_pages)):
@@ -133,11 +140,6 @@ def make_8949(reader):
         output.write(outputStream)
         outputStream.close()
 
-    reader = csv.reader(open('%s/incomespend.csv' % derived_folder,'r'))
-    reader.__next__()
-
-    second_pages,totals = draw_second_pages(reader)
-    print('long term totals', totals)
     for pageNum, second_page in enumerate(tqdm(second_pages)):
         template = PdfFileReader(open('./capitalgains/8949-blank.pdf', 'rb'))
         output = PdfFileWriter()

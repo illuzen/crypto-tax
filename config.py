@@ -10,15 +10,12 @@ input_folder = './input_data/%s' % initials
 
 # 1 day in seconds
 one_day = 24 * 60 * 60
-one_minute = 55 * 1000
-
-dollar_epsilon = 100
 dollar_pct = .2
 
 num_processes = 4
 parallel = False
 ignore_margins = True
-reload_data = True
+reload_data = False
 likekind_threshold = 1000
 
 def maybe_open(path):

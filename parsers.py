@@ -663,7 +663,7 @@ def parse_coin_tracker(path):
             maybe_print('Skipping row %d because date %s is out of range' % (i, date))
             continue
         if group == 'Margin' and ignore_margins:
-            maybe_print('Skipping row %d because margin trade' % row)
+            maybe_print('Skipping row %d because margin trade %s' % (i, row))
             continue
         if buy_cur == 'STR': buy_cur = 'XLM'
         if sell_cur == 'STR': sell_cur = 'XLM'

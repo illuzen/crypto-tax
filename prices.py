@@ -279,7 +279,7 @@ def get_price_cmc(symbol,date):
     slug = slug_map.get(symbol,symbol)
     # sleep in case cmc is blocking us
     sleep(1)
-    url = 'https://coinmarketcap.com/currencies/%s/historical-data/?start=20130428&end=20180410' % slug
+    url = 'https://coinmarketcap.com/currencies/%s/historical-data/?start=20130428&end=20190410' % slug
     maybe_print('making request to %s' % url)
     text = requests.get(url).text
     #print(text)
@@ -335,6 +335,7 @@ def collect_saved_prices():
         except KeyError:
             prices[symbol] = {date_string: float(price)}
 
+#interpolate_prices()
 
 collect_cmc_files()
 collect_saved_prices()

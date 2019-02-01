@@ -20,10 +20,10 @@ from pprint import pprint
 from config import *
 import os
 from prices import prices
-
+from hashlib import sha3_256 as sha
 
 anomalies = []
-
+target_currencies = ['CRYPT']
 
 #queues = { 'BTC': [], 'ETH': [], 'DASH': [], 'BCH': [] }
 # queues = {}
@@ -34,11 +34,14 @@ anomalies = []
 def initialize():
     global queues
     global balances
+    global cost_bases
     global my_addresses
     global likekind_sheet
+    global likekind_file
     global income_spend_sheet
     global income_spend_file
-    global likekind_file
+    global cost_basis_sheet
+    global cost_basis_file
     global tx_id
     global spend_queues
 
@@ -46,13 +49,54 @@ def initialize():
     queues = {}
     spend_queues = {}
     balances = {}
+    cost_bases = {}
     my_addresses = []
     income_spend_file = open('%s/incomespend.csv' % derived_folder, 'w')
     income_spend_sheet = csv.writer(income_spend_file)
-    income_spend_sheet.writerow(['id','currency','amount','cost_basis','price','timestamp','direction', 'origin_date', 'category'])
+    income_spend_sheet.writerow([
+        'id',
+        'previous_id',
+        'currency',
+        'amount',
+        'cost_basis',
+        'price',
+        'timestamp',
+        'direction',
+        'origin_date',
+        'category'
+    ])
     likekind_file = open('%s/likekind.csv' % derived_folder, 'w')
     likekind_sheet = csv.writer(likekind_file)
-    likekind_sheet.writerow(['id','previous_id','received','received_amount','received_price','relinquished','relinquished_amount','relinquished_price','swap_date','last_trade_date','origin_date','cost_basis'])
+    likekind_sheet.writerow([
+        'id',
+        'previous_id',
+        'received',
+        'received_amount',
+        'received_price',
+        'relinquished',
+        'relinquished_amount',
+        'relinquished_price',
+        'swap_date',
+        'last_trade_date',
+        'origin_date',
+        'origin_id',
+        'cost_basis'
+    ])
+    cost_basis_file = open('%s/cost_basis.csv' % derived_folder, 'w')
+    cost_basis_sheet = csv.writer(cost_basis_file)
+    cost_basis_sheet.writerow([
+        'Type',
+        'Buy',
+        'Cur.',
+        'Sell',
+        'Cur.',
+        'Fee',
+        'Cur.',
+        'Exchange',
+        'Group',
+        'Comment',
+        'Date'
+    ])
 
 
 def sort_txs_by_date(txs):
@@ -60,6 +104,10 @@ def sort_txs_by_date(txs):
     for i,tx in enumerate(sort):
         tx['index'] = i
     return sort
+
+
+def likekind_eligible(tx):
+    return int(tx['date'].split('/')[0]) < 2018
 
 
 def process_exchange_order(txs, i):
@@ -79,7 +127,7 @@ def process_exchange_order(txs, i):
         out_tx = tx1 if tx1['direction'] == 'out' else tx2
         in_tx = tx1 if tx1['direction'] == 'in' else tx2
 
-        if out_tx['currency'] == 'USD' or in_tx['currency'] == 'USD':
+        if out_tx['currency'] == 'USD' or in_tx['currency'] == 'USD' or likekind_eligible(out_tx) == False:
             handle_purchase_sale(out_tx,in_tx)
         else:
             #print('likekind')
@@ -107,16 +155,17 @@ def process_off_exchange(txs, i):
 
         # must be different directions, neither is exchange order and close enough dollar amounts
         different_direction = tx2['direction'] != tx1['direction']
+        if different_direction is False: continue
         close_dollar = abs(tx2['dollar'] - tx1['dollar']) / max(tx2['dollar'], tx1['dollar']) < dollar_pct
         not_order = 'order' not in tx2['notes']
-        if different_direction and not_order and close_dollar:
+        if not_order and close_dollar:
             found = True
             break
 
     #print(tx2)
     # if close in time and dollar amount, probably likekind or self transfer
     if found:
-        if tx1['currency'] == 'USD' or tx2['currency'] == 'USD':
+        if tx1['currency'] == 'USD' or tx2['currency'] == 'USD' or likekind_eligible(tx2) == False:
             handle_purchase_sale(tx1,tx2)
         elif different_currency:
             handle_likekind(tx1, tx2)
@@ -151,7 +200,7 @@ def process_txs(data):
 
     income_spend_file.close()
     likekind_file.close()
-    print(balances)
+    dump_balances_cost_basis()
 
 
 def handle_purchase_sale(tx1, tx2):
@@ -171,22 +220,24 @@ def handle_single(tx):
     else:
         raise Exception('Unknown direction type %s' % tx)
 
+
 # we purchased or received crypto
 def handle_purchase(tx1,tx2):
     usd = tx1 if tx1['currency'] == 'USD' else tx2
     crypto = tx2 if tx1['currency'] == 'USD' else tx1
-    logging.info('treating txs %d and %d as purchase' % (tx1['index'], tx2['index']))
-    maybe_print('treating txs %d and %d as purchase' % (tx1['index'], tx2['index']))
+    #maybe_print('treating txs %d and %d as purchase' % (tx1['index'], tx2['index']))
     crypto['category'] = 'purchase'
     crypto['paired'] = usd['index']
     usd['category'] = 'purchase'
     usd['paired'] = crypto['paired']
     crypto['cost_basis'] = crypto['dollar']
     crypto['origin_date'] = crypto['timestamp']
-    crypto['id'] = get_new_tx_id()
+    crypto['id'] = usd['index']
+    crypto['origin_id'] = crypto['id']
     q_in = get_queue_for_currency(crypto['currency'])
     q_in.insert(0, crypto)
     update_balance(crypto['currency'], crypto['amount'])
+    update_cost_basis(crypto['currency'], crypto['cost_basis'])
     #write_income_spend(crypto)
 
 
@@ -197,10 +248,13 @@ def handle_income(income):
     income['category'] = 'income'
     income['cost_basis'] = income['dollar']
     income['origin_date'] = income['timestamp']
-    income['id'] = get_new_tx_id()
+    income['id'] = income['index']
+    income['previous_id'] = -1
+    income['origin_id'] = income['id']
     q_in = get_queue_for_currency(income['currency'])
     q_in.insert(0, income)
     update_balance(income['currency'], income['amount'])
+    update_cost_basis(income['currency'], income['cost_basis'])
     write_income_spend(income)
 
 
@@ -236,11 +290,14 @@ def handle_spend(spend):
             tx_out['amount'] -= spend_piece_amount
 
         spend_amount_left -= spend_piece_amount
+        update_cost_basis(currency, -1 * cost_basis)
+
         if spend_amount_left < 1e-8:
             spend_amount_left = 0
 
         income_spend = {
-            'id':tx_out['id'],
+            'id':get_new_tx_id(),
+            'previous_id':tx_out['id'],
             'currency':currency,
             'category':'spend',
             'amount': spend_piece_amount,
@@ -248,7 +305,8 @@ def handle_spend(spend):
             'price':price,
             'timestamp': timestamp,
             'direction':'out',
-            'origin_date': tx_out['origin_date']
+            'origin_date': tx_out['origin_date'],
+            'origin_id': tx_out['origin_id']
         }
         write_income_spend(income_spend)
 
@@ -277,8 +335,8 @@ def handle_likekind(tx1, tx2):
     in_price = income['price']
     spend_amount_left = out_amount
     income_amount_left = in_amount
-    maybe_print('Spending %f %s, have %f' % (out_amount, out_currency, balances[out_currency]))
-    maybe_print('Receiving %f %s, have %f' % (in_amount, in_currency, balances[in_currency]))
+    #maybe_print('Spending %f %s, have %f' % (out_amount, out_currency, balances[out_currency]))
+    #maybe_print('Receiving %f %s, have %f' % (in_amount, in_currency, balances[in_currency]))
 
     # deplete items from the out queue until spend is accounted for
     while spend_amount_left > 0:
@@ -306,9 +364,13 @@ def handle_likekind(tx1, tx2):
             income_piece_amount = income_amount_left
             cost_basis = tx_out['cost_basis'] * spend_piece_amount / tx_out['amount']
             tx_out['amount'] -= spend_piece_amount
+            tx_out['cost_basis'] -= cost_basis
 
         income_amount_left -= income_piece_amount
         spend_amount_left -= spend_piece_amount
+        update_cost_basis(out_currency, -1 * cost_basis)
+        update_cost_basis(in_currency, cost_basis)
+
         if spend_amount_left < 5e-6:
             spend_amount_left = 0
 
@@ -317,6 +379,7 @@ def handle_likekind(tx1, tx2):
         income_piece['amount'] = income_piece_amount
         income_piece['dollar'] = income_piece['amount'] * income_piece['price']
         income_piece['origin_date'] = tx_out['origin_date']
+        income_piece['origin_id'] = tx_out['origin_id']
         income_piece['cost_basis'] = cost_basis
         q_in.insert(0, income_piece)
 
@@ -332,6 +395,7 @@ def handle_likekind(tx1, tx2):
             'swap_date': income_piece['timestamp'],
             'last_trade_date': spend['timestamp'],
             'origin_date': income_piece['origin_date'],
+            'origin_id': income_piece['origin_id'],
             'cost_basis': income_piece['cost_basis'],
         }
         write_likekind(likekind)
@@ -346,6 +410,10 @@ def get_queue_for_currency(currency):
 
 
 def update_balance(currency, amount):
+    global target_currencies
+    if currency in target_currencies:
+        print('balance[%s] = %s + %s' % (currency, balances.get(currency,0), amount))
+
     try:
         balances[currency] += amount
     except KeyError:
@@ -357,6 +425,34 @@ def update_balance(currency, amount):
         maybe_print('Negative balance %s: %f' % (currency, balances[currency]))
 
 
+def update_cost_basis(currency, amount):
+    global target_currencies
+    if currency in target_currencies:
+        print('cost_basis[%s] = %s + %s' % (currency, cost_bases.get(currency,0), amount))
+
+    try:
+        cost_bases[currency] += amount
+    except KeyError:
+        cost_bases[currency] = amount
+
+    cost_bases[currency] = round(cost_bases[currency], 7)
+
+    if cost_bases[currency] < 0:
+        maybe_print('Negative cost basis %s: %f' % (currency, cost_bases[currency]))
+
+
+def process_remainder():
+    for symbol, q in queues.items():
+        for item in q:
+            cost_basis = {
+                'amount': item['amount'],
+                'symbol': symbol,
+                'cost_basis': item['cost_basis'],
+                'origin_date': item['origin_date']
+            }
+            write_cost_basis(cost_basis)
+    cost_basis_file.close()
+
 def get_new_tx_id():
     global tx_id
     tx_id += 1
@@ -367,6 +463,7 @@ def write_income_spend(income_spend):
     time_format = '%Y/%m/%d'
     row = [
         income_spend['id'],
+        income_spend['previous_id'],
         income_spend['currency'],
         income_spend['amount'],
         income_spend['cost_basis'],
@@ -393,9 +490,28 @@ def write_likekind(likekind):
         datetime.datetime.fromtimestamp(likekind['swap_date']).strftime(time_format),
         datetime.datetime.fromtimestamp(likekind['last_trade_date']).strftime(time_format),
         datetime.datetime.fromtimestamp(likekind['origin_date']).strftime(time_format),
+        likekind['origin_id'],
         likekind['cost_basis'],
     ]
     likekind_sheet.writerow(row)
+
+
+def write_cost_basis(cost_basis):
+    time_format = '%Y/%m/%d'
+    row = [
+        'Trade',
+        cost_basis['amount'],
+        cost_basis['symbol'],
+        cost_basis['cost_basis'],
+        'USD',
+        '',
+        '',
+        'N/A - Like Kind Exchange',
+        '',
+        '',
+        datetime.datetime.fromtimestamp(cost_basis['origin_date']).strftime(time_format)
+    ]
+    cost_basis_sheet.writerow(row)
 
 
 def collect_addresses():
@@ -442,10 +558,15 @@ def collect_addresses():
     return my_addresses
 
 
+def hash_path(path):
+    with open(path, 'r') as file:
+        return sha(file.read().encode()).hexdigest()
+
+
 def collect_transactions():
     txs = []
     failed = []
-
+    hashes = []
     g = glob.glob('%s/cointracker/*' % input_folder)
     for path in g:
         parsed, not_parsed = parsers.parse_coin_tracker(path)
@@ -505,6 +626,12 @@ def dump_prices(p):
                 file.write('%s,%s,%s\n' % (symbol, date_string, price))
 
 
+def dump_balances_cost_basis():
+    maybe_print('Writing final balances to disk')
+    d = {'balances': balances, 'cost_basis': cost_bases}
+    json.dump(d, open('%s/balances.json' % derived_folder, 'w'), indent=4, separators=(',', ':'))
+
+
 # def assert_q_sorted(q):
 #     sorted_q = sorted(q, key=lambda x: x['timestamp'], reverse=True)
 #     if sorted_q != q:
@@ -515,14 +642,17 @@ def start_to_finish():
     initialize()
 
     if os.path.isfile(final_file) and not reload_data:
+        maybe_print('Loading previously collected txs from disk')
         txs = json.load(open(final_file, 'r'))
     else:
+        maybe_print('Collecting transactions')
         txs = collect_transactions()
         dump_txs(txs)
         dump_prices(prices)
     process_txs(txs)
-
+    process_remainder()
 
 if __name__ == "__main__":
     start_to_finish()
     print('Dun')
+
