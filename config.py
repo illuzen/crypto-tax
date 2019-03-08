@@ -15,8 +15,9 @@ dollar_pct = .2
 num_processes = 4
 parallel = False
 ignore_margins = True
-reload_data = False
+reload_data = True
 likekind_threshold = 1000
+likekind_cutoff_year = 2018
 
 def maybe_open(path):
     maybe_print('Trying to open file %s' % path)

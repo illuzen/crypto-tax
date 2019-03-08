@@ -5,11 +5,22 @@ from reportlab.lib.pagesizes import letter
 from glob import glob
 import csv
 from tqdm import tqdm
-from config import *
+from config import target_year
 from credentials.credentials import name, ssn
+import datetime
+import sys
+
+
+target_folder = ''
+if len(target_folder) == 0:
+    print('please set target_folder')
+    sys.exit(1)
+
+print('using %s as target_folder' % target_folder)
+
 
 merger = PdfFileMerger()
-reader = csv.reader(open('%s/incomespend.csv' % derived_folder,'r'))
+reader = csv.reader(open('%s/incomespend.csv' % target_folder,'r'))
 header = reader.__next__()
 
 # id,currency,amount,cost_basis,price,timestamp,direction,origin_date,category
@@ -41,7 +52,7 @@ def extract_row(row):
         d['diff'] = '(%s)' % str(-diff)
     else:
         d['diff'] = str(diff)
-    d['usd_rcvd'] = str(usd_rcvd)
+    d['usd_income'] = str(usd_rcvd)
     d['cost_basis'] = str(cost_basis)
     return d
 
@@ -58,7 +69,7 @@ def draw_pages(rows, short_term):
     offset = 0 if short_term else second_page_offset
     totals = {
         'cost_basis': 0,
-        'usd_rcvd': 0
+        'usd_income': 0
     }
     for row in tqdm(rows):
         if row[category_idx] != 'spend': continue
@@ -85,12 +96,12 @@ def draw_pages(rows, short_term):
         yCoord = 430 - ((rowNum % 14) * 24) + offset
         rowNum += 1
         totals['cost_basis'] += float(d['cost_basis'])
-        totals['usd_rcvd'] += float(d['usd_rcvd'])
+        totals['usd_income'] += float(d['usd_income'])
 
         can.drawString(50, yCoord, d['prop_sold'])
         can.drawString(175, yCoord, d['origin_date'])
         can.drawString(225, yCoord, d['sold_date'])
-        can.drawString(285, yCoord, d['usd_rcvd'])
+        can.drawString(285, yCoord, d['usd_income'])
         can.drawString(355, yCoord, d['cost_basis'])
         can.drawString(540, yCoord, d['diff'])
 
@@ -101,6 +112,7 @@ def draw_pages(rows, short_term):
             packet.seek(0)
             pages.append(PdfFileReader(packet))
         #if rowNum % (3 * rows_per_page) == 0: break
+    totals['capital_gain'] = totals['usd_income'] - totals['cost_basis']
     return pages, totals
 
 
@@ -116,13 +128,13 @@ def draw_second_pages(rows):
 
 def make_8949(reader):
 
-    reader = csv.reader(open('%s/incomespend.csv' % derived_folder,'r'))
+    reader = csv.reader(open('%s/incomespend.csv' % target_folder, 'r'))
     reader.__next__()
 
     first_pages, totals = draw_first_pages(reader)
     print('short term totals', totals)
 
-    reader = csv.reader(open('%s/incomespend.csv' % derived_folder,'r'))
+    reader = csv.reader(open('%s/incomespend.csv' % target_folder, 'r'))
     reader.__next__()
 
     second_pages,totals = draw_second_pages(reader)
@@ -133,7 +145,7 @@ def make_8949(reader):
     for pageNum, first_page in enumerate(tqdm(first_pages)):
         template = PdfFileReader(open('./capitalgains/8949-blank.pdf', 'rb'))
         output = PdfFileWriter()
-        outputStream = open('%s/intermediate-8949/first-%d.pdf' % (derived_folder, pageNum), "wb")
+        outputStream = open('%s/intermediate-8949/first-%d.pdf' % (target_folder, pageNum), "wb")
         page = template.getPage(0)
         page.mergePage(first_page.getPage(0))
         output.addPage(page)
@@ -143,7 +155,7 @@ def make_8949(reader):
     for pageNum, second_page in enumerate(tqdm(second_pages)):
         template = PdfFileReader(open('./capitalgains/8949-blank.pdf', 'rb'))
         output = PdfFileWriter()
-        outputStream = open('%s/intermediate-8949/second-%d.pdf' % (derived_folder, pageNum), "wb")
+        outputStream = open('%s/intermediate-8949/second-%d.pdf' % (target_folder, pageNum), "wb")
         page = template.getPage(1)
         page.mergePage(second_page.getPage(0))
         output.addPage(page)
@@ -151,13 +163,12 @@ def make_8949(reader):
         outputStream.close()
 
 
-
 make_8949(reader)
 
 
-g = glob('%s/intermediate-8949/*.pdf' % derived_folder)
+g = glob('%s/intermediate-8949/*.pdf' % target_folder)
 for path in tqdm(g):
     merger.append(PdfFileReader(open(path, 'rb')))
 
 print('Merging all pdfs into one')
-merger.write("%s/8949-complete-%s.pdf" % (derived_folder, datetime.datetime.now().timestamp()))
+merger.write("%s/8949-complete-%s.pdf" % (target_folder, datetime.datetime.now().timestamp()))

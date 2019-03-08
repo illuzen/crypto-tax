@@ -1,13 +1,14 @@
 import requests
 import json
 import logging
-import datetime
 from dateutil import parser as dateparser
 from config import *
 from time import sleep
 from glob import glob
 import pandas as pd
 
+
+logging.basicConfig()
 prices = {}
 unknown_symbol = {}
 cmc_listings = None
@@ -219,17 +220,20 @@ def get_price(symbol,date):
     try:
         return get_price_rr(symbol, target_date)
     except Exception:
-        print('Failed to get price %s %s from rootmont' % (symbol, target_date))
+        pass
+        # print('Failed to get price %s %s from rootmont' % (symbol, target_date))
 
     try:
         return get_price_cmc(symbol,target_date)
     except UserWarning:
-        print('Failed to get price %s %s from cmc' % (symbol, target_date))
+        pass
+        # print('Failed to get price %s %s from cmc' % (symbol, target_date))
 
     try:
         return get_price_bic(symbol,target_date)
     except Exception:
-        print('Failed to get price %s %s from bitinfo' % (symbol, target_date))
+        # print('Failed to get price %s %s from bitinfo' % (symbol, target_date))
+        print('Failed to get price from anywhere %s %s ' % (symbol, target_date))
         unknown_symbol[symbol] = True
         # where dat nun cum frum??
         return None
@@ -285,7 +289,10 @@ def get_price_cmc(symbol,date):
     #print(text)
     data = parse_cmc_text(text)
     # prices[symbol][date_string] = price
-    prices[symbol] = data
+    if symbol in prices:
+        prices[symbol].update(data)
+    else:
+        prices[symbol] = data
 
     if date not in prices[symbol]:
         raise UserWarning()
@@ -319,9 +326,9 @@ def collect_cmc_files():
     for path in htmls:
         symbol = path.split('/')[2].split('.')[0]
         f = open(path, 'r')
-        try:
+        if symbol in prices:
             prices[symbol].update(parse_cmc_text(f.read()))
-        except KeyError:
+        else:
             prices[symbol] = parse_cmc_text(f.read())
 
 

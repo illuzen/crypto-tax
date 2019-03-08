@@ -11,7 +11,6 @@
 import csv
 import glob
 import parsers
-import datetime
 import copy
 from tqdm import tqdm
 import logging
@@ -21,9 +20,12 @@ from config import *
 import os
 from prices import prices
 from hashlib import sha3_256 as sha
+import sys
 
 anomalies = []
-target_currencies = ['CRYPT']
+target_currencies = ['ZET']
+now = datetime.datetime.now().strftime('%Y.%m.%d.%H.%M.%S')
+
 
 #queues = { 'BTC': [], 'ETH': [], 'DASH': [], 'BCH': [] }
 # queues = {}
@@ -44,6 +46,7 @@ def initialize():
     global cost_basis_file
     global tx_id
     global spend_queues
+    global data_hash
 
     tx_id = 0
     queues = {}
@@ -51,7 +54,7 @@ def initialize():
     balances = {}
     cost_bases = {}
     my_addresses = []
-    income_spend_file = open('%s/incomespend.csv' % derived_folder, 'w')
+    income_spend_file = open('%s/incomespend.csv' % current_run_folder(), 'w')
     income_spend_sheet = csv.writer(income_spend_file)
     income_spend_sheet.writerow([
         'id',
@@ -65,7 +68,7 @@ def initialize():
         'origin_date',
         'category'
     ])
-    likekind_file = open('%s/likekind.csv' % derived_folder, 'w')
+    likekind_file = open('%s/likekind.csv' % current_run_folder(), 'w')
     likekind_sheet = csv.writer(likekind_file)
     likekind_sheet.writerow([
         'id',
@@ -82,7 +85,7 @@ def initialize():
         'origin_id',
         'cost_basis'
     ])
-    cost_basis_file = open('%s/cost_basis.csv' % derived_folder, 'w')
+    cost_basis_file = open('%s/cost_basis.csv' % current_run_folder(), 'w')
     cost_basis_sheet = csv.writer(cost_basis_file)
     cost_basis_sheet.writerow([
         'Type',
@@ -107,7 +110,7 @@ def sort_txs_by_date(txs):
 
 
 def likekind_eligible(tx):
-    return int(tx['date'].split('/')[0]) < 2018
+    return int(tx['date'].split('/')[0]) < likekind_cutoff_year
 
 
 def process_exchange_order(txs, i):
@@ -182,7 +185,6 @@ def process_off_exchange(txs, i):
 
 def process_txs(data):
     txs = copy.deepcopy(sort_txs_by_date(data))
-    json.dump(txs, open('%s/transactions-final-%d.json' % (derived_folder,datetime.datetime.now().timestamp()), 'w'), indent=4, separators=(',', ':'))
 
     i = 0
     while i < len(txs):
@@ -210,6 +212,9 @@ def handle_purchase_sale(tx1, tx2):
         handle_spend(outgoing)
     elif outgoing['currency'] == 'USD':
         handle_purchase(tx1,tx2)
+    else:
+        handle_spend(outgoing)
+        handle_income(incoming)
 
 
 def handle_single(tx):
@@ -229,8 +234,8 @@ def handle_purchase(tx1,tx2):
     crypto['category'] = 'purchase'
     crypto['paired'] = usd['index']
     usd['category'] = 'purchase'
-    usd['paired'] = crypto['paired']
-    crypto['cost_basis'] = crypto['dollar']
+    usd['paired'] = crypto['index']
+    crypto['cost_basis'] = usd['dollar']
     crypto['origin_date'] = crypto['timestamp']
     crypto['id'] = usd['index']
     crypto['origin_id'] = crypto['id']
@@ -263,7 +268,6 @@ def handle_spend(spend):
     price = spend['price']
     spend_amount_left = spend['amount']
     timestamp = spend['timestamp']
-    out_currency = spend['currency']
 
     currency = spend['currency']
     q_out = get_queue_for_currency(currency)
@@ -272,10 +276,10 @@ def handle_spend(spend):
 
     while spend_amount_left > 0:
         if len(q_out) == 0:
-            msg = "Empty queue for currency %s" % out_currency
+            msg = "Empty queue for currency %s, tried to spend %s" % (currency, spend_amount_left)
             maybe_print(msg)
-            pprint(spend)
-            pprint(balances)
+            # pprint(spend)
+            # pprint(balances)
             anomalies.append([spend])
             return
         tx_out = q_out[-1]
@@ -341,11 +345,11 @@ def handle_likekind(tx1, tx2):
     # deplete items from the out queue until spend is accounted for
     while spend_amount_left > 0:
         if len(q_out) == 0:
-            msg = "Empty queue for currency %s" % out_currency
+            msg = "Empty queue for currency %s, tried to pull %s" % (out_currency, spend_amount_left)
             maybe_print(msg)
-            pprint(spend)
-            pprint(income)
-            pprint(balances)
+            # pprint(spend)
+            # pprint(income)
+            # pprint(balances)
             anomalies.append([tx1,tx2])
             return
         tx_out = q_out[-1]
@@ -355,7 +359,7 @@ def handle_likekind(tx1, tx2):
             cost_basis = tx_out['cost_basis']
             q_out.pop()
         elif spend_amount_left == tx_out['amount']:
-            spend_piece_amount = spend_amount_left
+            spend_piece_amount = tx_out['amount']
             income_piece_amount = income_amount_left
             cost_basis = tx_out['cost_basis']
             q_out.pop()
@@ -428,7 +432,8 @@ def update_balance(currency, amount):
 def update_cost_basis(currency, amount):
     global target_currencies
     if currency in target_currencies:
-        print('cost_basis[%s] = %s + %s' % (currency, cost_bases.get(currency,0), amount))
+        pass
+        # print('cost_basis[%s] = %s + %s' % (currency, cost_bases.get(currency,0), amount))
 
     try:
         cost_bases[currency] += amount
@@ -452,6 +457,7 @@ def process_remainder():
             }
             write_cost_basis(cost_basis)
     cost_basis_file.close()
+
 
 def get_new_tx_id():
     global tx_id
@@ -550,7 +556,7 @@ def collect_addresses():
             date,time,tx_hash,address,tx_type,value,tx_total,fee,balance = row.split(',')
             my_addresses.append([address, 'DASH'])
 
-    f = open('%s/addresses.csv' % derived_folder, 'w')
+    f = open('%s/addresses.csv' % current_run_folder(), 'w')
     writer = csv.writer(f)
     for addr in my_addresses:
         writer.writerow(addr)
@@ -564,14 +570,19 @@ def hash_path(path):
 
 
 def collect_transactions():
+    global data_hash
     txs = []
     failed = []
-    hashes = []
     g = glob.glob('%s/cointracker/*' % input_folder)
     for path in g:
-        parsed, not_parsed = parsers.parse_coin_tracker(path)
-        txs.extend(parsed)
-        failed.extend(not_parsed)
+        if 'custom' in path:
+            parsed, not_parsed = parsers.parse_coin_tracker_custom(path)
+            txs.extend(parsed)
+            failed.extend(not_parsed)
+        else:
+            parsed, not_parsed = parsers.parse_coin_tracker(path)
+            txs.extend(parsed)
+            failed.extend(not_parsed)
 
     g = glob.glob('%s/etherscan/*' % input_folder)
     for path in g:
@@ -606,14 +617,42 @@ def collect_transactions():
     for tx in txs:
         tx['date'] = datetime.datetime.fromtimestamp(tx['timestamp']).strftime('%Y/%m/%d')
 
-    if len(failed) > 0: json.dump(failed, open('%s/failed.tsv' % derived_folder, 'w'))
+    tx_hash = sha(str(txs).encode()).hexdigest()
+    failed_hash = sha(str(txs).encode()).hexdigest()
+    hashes = {
+        'txs': tx_hash,
+        'failed':failed_hash
+    }
+    for filename in ['./config.py','./parsers.py','./prices.py','./cryptotax.py']:
+        with open(filename, 'r') as filo:
+            hashes[filename] = sha(filo.read().encode()).hexdigest()
+
+    data_hash = sha(json.dumps(hashes).encode()).hexdigest()
+    hashes['data'] = data_hash
+    if len(failed) > 0: json.dump(failed, open('%s/failed.json' % current_run_folder(), 'w'))
+    json.dump(hashes, open('%s/hashes.json' % current_run_folder(), 'w'), indent=4, separators=(',', ':'))
 
     return txs
 
 
+def current_run_folder():
+    if data_hash is None:
+        print('cannot make current run folder without data_hash')
+        sys.exit(1)
+    directory = '%s/%s.%s' % (derived_folder, now, data_hash)
+    if not os.path.exists(directory):
+        os.makedirs(directory)
+    return directory
+
+
+# def format_filename(name, hash, suffix):
+#     return '%s/%s-%s-%s.%s' % (derived_folder, name, hash, now, suffix)
+
+
 def dump_txs(txs):
     maybe_print('Writing txs to disk')
-    json.dump(txs, open('%s/transactions.json' % derived_folder, 'w'), indent=4, separators=(',', ':'))
+    # json.dump(txs, open('%s/transactions.json' % derived_folder, 'w'), indent=4, separators=(',', ':'))
+    json.dump(sort_txs_by_date(txs), open('%s/transactions.json' % current_run_folder(), 'w'), indent=4, separators=(',', ':'))
 
 
 def dump_prices(p):
@@ -629,7 +668,8 @@ def dump_prices(p):
 def dump_balances_cost_basis():
     maybe_print('Writing final balances to disk')
     d = {'balances': balances, 'cost_basis': cost_bases}
-    json.dump(d, open('%s/balances.json' % derived_folder, 'w'), indent=4, separators=(',', ':'))
+    # json.dump(d, open('%s/balances.json' % derived_folder, 'w'), indent=4, separators=(',', ':'))
+    json.dump(d, open('%s/balances.json' % current_run_folder(), 'w'), indent=4, separators=(',', ':'))
 
 
 # def assert_q_sorted(q):
@@ -639,7 +679,6 @@ def dump_balances_cost_basis():
 
 
 def start_to_finish():
-    initialize()
 
     if os.path.isfile(final_file) and not reload_data:
         maybe_print('Loading previously collected txs from disk')
@@ -649,8 +688,10 @@ def start_to_finish():
         txs = collect_transactions()
         dump_txs(txs)
         dump_prices(prices)
+    initialize()
     process_txs(txs)
     process_remainder()
+
 
 if __name__ == "__main__":
     start_to_finish()

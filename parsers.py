@@ -671,11 +671,120 @@ def parse_coin_tracker(path):
         buy_amt = float(buy_amt) if len(buy_amt) > 0 else 0
         sell_amt = float(sell_amt) if len(sell_amt) > 0 else 0
         fee_amt = float(fee_amt) if len(fee_amt) > 0 else 0
-        if exchange != 'Poloniex':
-            if fee_cur == buy_cur:
-                buy_amt -= fee_amt
-            if fee_cur == sell_cur:
-                sell_amt -= fee_amt
+        # if exchange != 'Poloniex':
+        #     if fee_cur == buy_cur:
+        #         buy_amt -= fee_amt
+        #     if fee_cur == sell_cur:
+        #         sell_amt -= fee_amt
+        if type == 'Trade':
+            sell_price = prices.get_price(sell_cur, dt)
+            buy_price = prices.get_price(buy_cur, dt)
+            if buy_price is None and sell_price is None:
+                print('Cannot handle row, saving %s' % row)
+                failed_rows.append(row)
+                continue
+            if buy_price is None:
+                buy_dollar = sell_price * sell_amt
+                buy_price = buy_dollar / buy_amt
+            else:
+                buy_dollar = buy_price * buy_amt
+            if sell_price is None:
+                sell_dollar = buy_price * buy_amt
+                sell_price = sell_dollar / sell_amt
+            else:
+                sell_dollar = sell_price * sell_amt
+
+            buy_dir = 'in'
+            sell_dir = 'out'
+            txs.append({
+                'dollar': sell_dollar,
+                'direction': sell_dir,
+                'price': sell_price,
+                'amount': sell_amt,
+                'currency': sell_cur,
+                'timestamp': dt.timestamp(),
+                'notes': 'gsheet order'
+            })
+
+            txs.append({
+                'dollar': buy_dollar,
+                'direction': buy_dir,
+                'price': buy_price,
+                'amount': buy_amt,
+                'currency': buy_cur,
+                'timestamp': dt.timestamp(),
+                'notes': 'gsheet order'
+            })
+
+        elif type == 'Withdrawal':
+            # not taxable event
+            pass
+        elif type == 'Deposit':
+            # not taxable event
+            pass
+        elif type == 'Income' or type == 'Mining':
+            buy_price = prices.get_price(buy_cur, dt)
+            if buy_price is None:
+                print('Cannot get price for %s on %s for Income, using 0 as price for cost_basis' % (buy_cur, dt))
+                buy_price = 0
+            buy_dollar = buy_price * buy_amt
+            buy_dir = 'in'
+            txs.append({
+                'dollar': buy_dollar,
+                'direction': buy_dir,
+                'price': buy_price,
+                'amount': buy_amt,
+                'currency': buy_cur,
+                'timestamp': dt.timestamp(),
+                'notes': 'gsheet'
+            })
+
+        elif type == 'Spend':
+            # we are not doing capital gains / losses for this one
+            sell_price = prices.get_price(sell_cur, dt)
+            if sell_price is None:
+                print('Cannot handle row, saving %s' % row)
+                failed_rows.append(row)
+                continue
+            sell_dollar = sell_price * sell_amt
+            sell_dir = 'out'
+            txs.append({
+                'dollar': sell_dollar,
+                'direction': sell_dir,
+                'price': sell_price,
+                'amount': sell_amt,
+                'currency': sell_cur,
+                'timestamp': dt.timestamp(),
+                'notes': 'gsheet'
+            })
+        elif type == 'Lost':
+            # fees? ocean?
+            pass
+
+    return txs, failed_rows
+
+
+def parse_coin_tracker_custom(path):
+    f = maybe_open(path)
+    if f is None: return []
+    f.__next__()
+    lines = f.readlines()
+    txs = []
+    failed_rows = []
+    for i, row in enumerate(lines):
+        _,type,buy_amt,buy_cur,sell_amt,sell_cur,exchange,ignore,_,date = row.split('\t')
+        if len(ignore) > 0:
+            maybe_print('Ignoring row: %s' % row)
+            continue
+        date = date.replace('\n', '')
+        dt = datetime.datetime.strptime(date, '%d.%m.%Y %H:%M')
+        if dt > cutoff_year:
+            maybe_print('Skipping row %d because date %s is out of range' % (i, date))
+            continue
+        if buy_cur == 'STR': buy_cur = 'XLM'
+        if sell_cur == 'STR': sell_cur = 'XLM'
+        buy_amt = float(buy_amt) if len(buy_amt) > 0 and buy_amt != '-' else 0
+        sell_amt = float(sell_amt) if len(sell_amt) > 0 and sell_amt != '-' else 0
         if type == 'Trade':
             sell_price = prices.get_price(sell_cur, dt)
             buy_price = prices.get_price(buy_cur, dt)
