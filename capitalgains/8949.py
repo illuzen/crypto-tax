@@ -5,18 +5,25 @@ from reportlab.lib.pagesizes import letter
 from glob import glob
 import csv
 from tqdm import tqdm
-from config import target_year
+from config import target_year, initials
 from credentials.credentials import name, ssn
 import datetime
 import sys
+import os
+import json
 
+run_folder = ''
 
-target_folder = ''
-if len(target_folder) == 0:
-    print('please set target_folder')
+if len(run_folder) == 0:
+    print('please set run_folder')
     sys.exit(1)
 
+target_folder = './data/%s/%s/%s' % (initials, target_year, run_folder)
 print('using %s as target_folder' % target_folder)
+
+intermediate_folder = '%s/intermediate-8949' % target_folder
+if not os.path.exists(intermediate_folder):
+    os.makedirs(intermediate_folder)
 
 
 merger = PdfFileMerger()
@@ -131,21 +138,24 @@ def make_8949(reader):
     reader = csv.reader(open('%s/incomespend.csv' % target_folder, 'r'))
     reader.__next__()
 
-    first_pages, totals = draw_first_pages(reader)
-    print('short term totals', totals)
+    first_pages, short_totals = draw_first_pages(reader)
+    print('short term totals', short_totals)
 
     reader = csv.reader(open('%s/incomespend.csv' % target_folder, 'r'))
     reader.__next__()
 
-    second_pages,totals = draw_second_pages(reader)
-    print('long term totals', totals)
+    second_pages,long_totals = draw_second_pages(reader)
+    print('long term totals', long_totals)
+
+    totals = {'short term': short_totals, 'long term': long_totals}
+    json.dump(totals, open('%s/capital_gains.json' % target_folder, 'w'), indent=4, separators=(',', ':'))
 
     # add the "watermark" (which is the new pdf) on the existing page
     # read your existing PDF
     for pageNum, first_page in enumerate(tqdm(first_pages)):
-        template = PdfFileReader(open('./capitalgains/8949-blank.pdf', 'rb'))
+        template = PdfFileReader(open('./capitalgains/8949-blank-%s.pdf' % target_year, 'rb'))
         output = PdfFileWriter()
-        outputStream = open('%s/intermediate-8949/first-%d.pdf' % (target_folder, pageNum), "wb")
+        outputStream = open('%s/first-%d.pdf' % (intermediate_folder, pageNum), "wb")
         page = template.getPage(0)
         page.mergePage(first_page.getPage(0))
         output.addPage(page)
@@ -153,9 +163,9 @@ def make_8949(reader):
         outputStream.close()
 
     for pageNum, second_page in enumerate(tqdm(second_pages)):
-        template = PdfFileReader(open('./capitalgains/8949-blank.pdf', 'rb'))
+        template = PdfFileReader(open('./capitalgains/8949-blank-%s.pdf' % target_year, 'rb'))
         output = PdfFileWriter()
-        outputStream = open('%s/intermediate-8949/second-%d.pdf' % (target_folder, pageNum), "wb")
+        outputStream = open('%s/second-%d.pdf' % (intermediate_folder, pageNum), "wb")
         page = template.getPage(1)
         page.mergePage(second_page.getPage(0))
         output.addPage(page)
@@ -166,9 +176,10 @@ def make_8949(reader):
 make_8949(reader)
 
 
-g = glob('%s/intermediate-8949/*.pdf' % target_folder)
+g = glob('%s/*.pdf' % intermediate_folder)
 for path in tqdm(g):
     merger.append(PdfFileReader(open(path, 'rb')))
 
 print('Merging all pdfs into one')
 merger.write("%s/8949-complete-%s.pdf" % (target_folder, datetime.datetime.now().timestamp()))
+print('Dun')

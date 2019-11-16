@@ -1,48 +1,52 @@
-
-import datetime
 import prices
-import logging
+import dateutil
 import json
-import os
 from config import *
-from pprint import pprint
+import pandas as pd
 
-logging.basicConfig(filename='logs/all.log',level=logging.DEBUG)
+from config import logger
+
+
+token_symbols = {}
+
+def load_token_symbols():
+    global token_symbols
+    if len(token_symbols) == 0:
+        df = pd.read_csv('./data/token_symbol.csv')
+        df.index = df['Address'].apply(lambda x: x.replace("'",''))
+        df.drop(columns=['Address'], inplace=True)
+        token_symbols = df.to_dict()['Symbol']
+    return token_symbols
 
 
 def parse_ethplorer(path):
-    logging.info('parsing file %s' % path)
+    logger.info('parsing file %s' % path)
     txs = []
 
     f = open(path, 'r')
-    row_num = 0
-    frum1,frum2,to1,to2 = 0,0,0,0
-    for row in f:
-        if row_num == 0:
-            row_num += 1
-            continue
-        date,txhash,frum,to,token_name,token_address,quantity,symbol = row.split(';')
-        if row_num == 1:
-            frum1 = frum
-            to1 = to
-        elif row_num == 2:
-            frum2 = frum
-            to2 = to
-        else:
-            break
-        row_num += 1
+    f.__next__()
+    lines = f.readlines()
+    _, _, addr1, addr2, _, _, _, _ = lines[0].split(';')
+    addr1_present, addr2_present = True, True
+    for row in lines[1:]:
+        _, _, frum, to, _, _, _, _ = row.split(';')
+        if frum != addr1 and to != addr1:
+            addr1_present = False
+        if frum != addr2 and to != addr2:
+            addr2_present = False
 
-    if frum1 == to2 or frum1 == frum2:
-        my_address = frum1
-    elif to1 == frum2 or to1 == to2:
-        my_address = to1
+    if addr1_present and not addr2_present:
+        my_address = addr1
+    elif addr2_present and not addr1_present:
+        my_address = addr2
+    elif len(lines) == 1:
+        my_address = addr2
     else:
-        assert(row_num == 2)
-        my_address = to1
+        logger.warning('Unable to infer which address is ours: {}'.format(path))
+        return txs
 
     f = open(path, 'r')
     first_row = True
-    my_address
     for row in f:
         if first_row:
             first_row = False
@@ -51,15 +55,17 @@ def parse_ethplorer(path):
         symbol = symbol.replace('\n', '')
         direction = 'in' if to == my_address else 'out'
         quantity = float(quantity)
-        dt = date.split(' ')[0].split('-')
-        dt.extend(date.split(' ')[1].split(':'))
-        dt = [int(x) for x in dt]
-        dt = datetime.datetime(*dt)
+        dt = dateutil.parser.parse(date)
+        # dt = date.split(' ')[0].split('-')
+        # dt.extend(date.split(' ')[1].split(':'))
+        # dt = [int(x) for x in dt]
+        # dt = datetime.datetime(*dt)
         try:
             price = prices.get_price(symbol, dt)
+            if not price: price = 0
             dollar = quantity * price
         except Exception as e:
-            logging.warn(e)
+            logger.warning(e)
             continue
 
         if direction == '':
@@ -77,29 +83,81 @@ def parse_ethplorer(path):
     return txs
 
 
-def parse_etherscan(path):
-    logging.info('parsing file %s' % path)
+def parse_etherscan_token(path):
+    logger.info('parsing file %s' % path)
+    this_addr = path.split('.csv')[0].split('-')[-1].lower()
     f = open(path, 'r')
     first_row = True
     txs = []
-    type_branch = True
+    for row in f:
+        cols = row.split(',')
+        if first_row:
+            first_row = False
+            continue
+        txhash, unix_timestamp, date_time, frum, to, quantity, token_addr = cols
+        token_addr = token_addr.replace('"','').replace('\n','' ).lower()
+        frum = frum.replace('"','').replace('\n','' ).lower()
+        to = to.replace('"','').replace('\n','' ).lower()
+        currency = load_token_symbols().get(token_addr)
+        if currency is None:
+            logger.warning('Unknown token address: {}'.format(token_addr))
+            continue
+        quantity = float(quantity.replace('"',''))
+        if frum == this_addr:
+            direction = 'out'
+        elif to == this_addr:
+            direction = 'in'
+        else:
+            logger.warning('Unknown direction {}, {}, {}'.format(frum, to, this_addr))
+            continue
+
+        date_time = date_time.replace('"', '')
+        dt = dateutil.parser.parse(date_time)
+
+        try:
+            price = prices.get_price(currency, dt)
+        except Exception:
+            logger.warning('Unable to get price for {} {}'.format(currency, dt))
+            continue
+        logger.info('quantity: {} price: {} currency: {} dt: {}'.format(quantity, price, currency, dt))
+        dollar = quantity * price
+
+        txs.append({
+            'dollar': dollar,
+            'direction': direction,
+            'price': price,
+            'amount': quantity,
+            'currency': currency,
+            'timestamp': dt.timestamp(),
+            'notes': 'etherscan token'
+        })
+    return txs
+
+
+def parse_etherscan(path):
+    logger.info('parsing file %s' % path)
+    f = open(path, 'r')
+    first_row = True
+    txs = []
+    type_branch = 0
     for row in f:
         cols = row.split(',')
         if first_row:
             first_row = False
             if 'Type' in cols[-1]:
-                type_branch = True
-#                txhash,blockno,unix_timestamp,date_time,frum,to,contract_address,value_in,value_out,current_value,fee_eth,fee_usd,historical_price,status,err_code = cols
+                type_branch = 1
             elif 'ErrCode' in cols[-1]:
-                type_branch = False
-#                txhash,blockno,unix_timestamp,date_time,frum,to,contract_address,value_in,value_out,current_value,historical_price,status,err_code,taip = cols
+                type_branch = 2
             else:
                 raise Exception('Unexpected column format for csv at %s' % (path))
             continue
-        if type_branch:
+        if type_branch == 1:
             txhash,blockno,unix_timestamp,date_time,frum,to,contract_address,value_in,value_out,current_value,historical_price,status,err_code,taip = cols
-        else:
-            txhash,blockno,unix_timestamp,date_time,frum,to,contract_address,value_in,value_out,current_value,fee_eth,fee_usd,historical_price,status,err_code = cols
+        elif type_branch == 2:
+            if len(cols) == 15:
+                txhash,blockno,unix_timestamp,date_time,frum,to,contract_address,value_in,value_out,current_value,fee_eth,fee_usd,historical_price,status,err_code = cols
+            elif len(cols) == 16:
+                txhash,blockno,unix_timestamp,date_time,frum,to,contract_address,value_in,value_out,current_value,fee_eth,fee_usd,historical_price,status,err_code,_ = cols
 
         value_in = float(value_in.replace('"', ''))
         value_out = float(value_out.replace('"', ''))
@@ -172,6 +230,11 @@ def parse_bittrex_orders(path):
             in_currency = 'BCH'
         if out_currency == 'BCC':
             out_currency = 'BCH'
+        if in_currency == 'ANS':
+            in_currency = 'NEO'
+        if out_currency == 'ANS':
+            out_currency = 'NEO'
+
 
         try:
             out_price = prices.get_price(out_currency, dt)
@@ -179,7 +242,7 @@ def parse_bittrex_orders(path):
             in_price = prices.get_price(in_currency, dt)
             in_dollar = in_quantity * in_price
         except Exception as e:
-            logging.warn(e)
+            logger.warning(e)
             continue
 
         txs.append({
@@ -215,6 +278,8 @@ def parse_bittrex_withdrawals(path):
         currency = withdrawal['Currency']
         if currency == 'BCC':
             currency = 'BCH'
+        if currency == 'ANS':
+            currency = 'NEO'
         # 'Opened': '2017-10-21T02:38:30.693',
         date, time = withdrawal['Opened'].split('T')
         date = date.split('-')
@@ -225,7 +290,7 @@ def parse_bittrex_withdrawals(path):
         try:
             price = prices.get_price(currency, dt)
         except Exception as e:
-            logging.warn(e)
+            logger.warning(e)
             continue
         amount = withdrawal['Amount']
         dollar = price * amount
@@ -254,6 +319,8 @@ def parse_bittrex_deposits(path):
         currency = deposit['Currency']
         if currency == 'BCC':
             currency = 'BCH'
+        if currency == 'ANS':
+            currency = 'NEO'
         # 'Opened': '2017-10-21T02:38:30.693',
         date, time = deposit['LastUpdated'].split('T')
         date = date.split('-')
@@ -264,7 +331,7 @@ def parse_bittrex_deposits(path):
         try:
             price = prices.get_price(currency, dt)
         except Exception as e:
-            logging.warn(e)
+            logger.warning(e)
             continue
         amount = deposit['Amount']
         dollar = price * amount
@@ -297,15 +364,19 @@ def parse_poloniex_orders(path):
         dt.extend(t)
         dt = [int(x) for x in dt]
         dt = datetime.datetime(*dt)
-
+        cur1, cur2 = exchange.split('/')
+        if cur1 == 'STR':
+            cur1 = 'XLM'
+        if cur2 == 'STR':
+            cur2 = 'XLM'
         # determine orientation
         if 'Buy' in order_type:
-            in_currency, out_currency = exchange.split('/')[:2]
+            in_currency, out_currency = cur1, cur2
             out_quantity = abs(float(base_total_less_fee))
             in_quantity = abs(float(quote_total_less_fee))
 
         elif 'Sell' in order_type:
-            out_currency, in_currency = exchange.split('/')[:2]
+            out_currency, in_currency = cur1, cur2
             in_quantity = abs(float(base_total_less_fee))
             out_quantity = abs(float(quote_total_less_fee))
 
@@ -316,7 +387,7 @@ def parse_poloniex_orders(path):
             in_dollar = in_quantity * in_price
         except Exception as e:
             print('Dropping poloniex order', row)
-            logging.warn(e)
+            logger.warning(e)
             continue
 
         txs.append({
@@ -362,7 +433,7 @@ def parse_poloniex_withdrawals(path):
         try:
             price = prices.get_price(currency, dt)
         except Exception as e:
-            logging.warn(e)
+            logger.warning(e)
             continue
 
         dollar = price * amount
@@ -401,7 +472,7 @@ def parse_poloniex_deposits(path):
         try:
             price = prices.get_price(currency, dt)
         except Exception as e:
-            logging.warn(e)
+            logger.warning(e)
             continue
 
         dollar = price * amount
@@ -441,7 +512,7 @@ def parse_gdax(path):
         try:
             price = prices.get_price(currency, dt)
         except Exception as e:
-            logging.warn(e)
+            logger.warning(e)
             print(e)
             continue
 
@@ -463,6 +534,8 @@ def parse_gdax(path):
             amount *= -1
         elif entry_type == 'fee':
             continue
+        elif entry_type == 'rebate':
+            continue
         else:
             raise Exception('unrecognized entry type: %s' % entry_type)
 
@@ -482,6 +555,162 @@ def parse_gdax(path):
         })
 
     return txs
+
+
+def parse_binance_pair(pair):
+    pair = pair.replace('BCHABC', 'BCH').replace('BCC','BCH').replace('BCHSV','BSV')
+    for i in range(len(pair)):
+        if pair[:i] in prices.prices and pair[i:] in prices.prices:
+            return pair[:i], pair[i:]
+    logger.error('Could not parse binance pair {}'.format(pair))
+    raise ValueError()
+
+
+def parse_binance_orders(path):
+    f = maybe_open(path)
+    if f is None: return []
+    f = pd.read_excel(path)
+    txs = []
+    for i, row in f.iterrows():
+        if type(row['Date(UTC)']) != str:
+            continue
+        dt = dateutil.parser.parse(row['Date(UTC)'])
+        if dt.year > target_year:
+            continue
+
+        cur1, cur2 = parse_binance_pair(row['Pair'])
+        if row['Type'] == 'BUY':
+            in_currency = cur1
+            in_qty = row['Filled']
+            out_currency = cur2
+            out_qty = row['Total']
+        elif row['Type'] == 'SELL':
+            in_currency = cur2
+            in_qty = row['Total']
+            out_currency = cur1
+            out_qty = row['Filled']
+        else:
+            logger.warning('Unknown Type {}'.format(row['Type']))
+            continue
+
+        in_price = prices.get_price(in_currency, dt)
+        in_dollar = in_price * in_qty
+        out_price = prices.get_price(out_currency, dt)
+        out_dollar = out_price * out_qty
+
+        txs.append({
+            'dollar': out_dollar,
+            'direction': 'out',
+            'price': out_price,
+            'amount': out_qty,
+            'currency': out_currency,
+            'timestamp':  dt.timestamp(),
+            'notes': 'binance order'
+        })
+
+        txs.append({
+            'dollar': in_dollar,
+            'direction': 'in',
+            'price': in_price,
+            'amount': in_qty,
+            'currency': in_currency,
+            'timestamp': dt.timestamp(),
+            'notes': 'binance order'
+        })
+    return txs
+
+
+def parse_binance_withdrawals(path):
+    f = maybe_open(path)
+    if f is None: return []
+    f = pd.read_excel(path)
+    txs = []
+    for i, row in f.iterrows():
+        dt = dateutil.parser.parse(row['Date'])
+        if dt.year > target_year:
+            continue
+        currency = row['Coin'].replace('BCHABC','BCH').replace('BCC','BCH').replace('BCHSV','BSV')
+        try:
+            price = prices.get_price(currency, dt)
+        except Exception as e:
+            logger.warning('Could not get price for row {}'.format(row))
+            continue
+        amount = row['Amount']
+        dollar = price * amount
+
+        txs.append({
+            'dollar': dollar,
+            'direction':'out',
+            'price': price,
+            'amount': amount,
+            'currency': currency,
+            'timestamp': dt.timestamp(),
+            'notes':'binance withdrawal'
+        })
+    return txs
+
+
+def parse_binance_distributions(path):
+    f = maybe_open(path)
+    if f is None: return []
+    f = pd.read_csv(path)
+    txs = []
+    for i, row in f.iterrows():
+        dt = dateutil.parser.parse(row['Date'])
+        if dt.year > target_year:
+            continue
+        currency = row['Coin'].replace('BCHABC','BCH').replace('BCC','BCH').replace('BCHSV','BSV')
+        try:
+            price = prices.get_price(currency, dt)
+        except Exception as e:
+            logger.warning('Could not get price for row {}'.format(row))
+            continue
+        amount = row['Amount']
+        dollar = price * amount
+
+        txs.append({
+            'dollar': dollar,
+            'direction':'in',
+            'price': price,
+            'amount': amount,
+            'currency': currency,
+            'timestamp': dt.timestamp(),
+            'notes':'binance distribution'
+        })
+    return txs
+
+
+
+def parse_binance_deposits(path):
+    f = maybe_open(path)
+    if f is None: return []
+    f = pd.read_excel(path)
+    txs = []
+    for i, row in f.iterrows():
+
+        dt = dateutil.parser.parse(row['Date'])
+        if dt.year > target_year:
+            continue
+        currency = row['Coin'].replace('BCHABC','BCH').replace('BCC','BCH').replace('BCHSV','BSV')
+        try:
+            price = prices.get_price(currency, dt)
+        except Exception as e:
+            logger.warning('Could not get price for row {}'.format(row))
+            continue
+        amount = row['Amount']
+        dollar = price * amount
+
+        txs.append({
+            'dollar': dollar,
+            'direction':'in',
+            'price': price,
+            'amount': amount,
+            'currency': currency,
+            'timestamp': dt.timestamp(),
+            'notes':'binance deposit'
+        })
+    return txs
+
 
 
 def parse_kraken(path):
@@ -516,7 +745,7 @@ def parse_kraken(path):
         try:
             price = prices.get_price(currency, dt)
         except Exception as e:
-            logging.warn(e)
+            logger.warning(e)
             continue
 
         if entry_type == 'deposit':
@@ -556,28 +785,93 @@ def parse_kraken(path):
     return txs
 
 
+# def parse_coinbase_pro(path):
+#     f = maybe_open(path)
+#     if f is None: return []
+#     first_row = True
+#     txs = []
+#     for row in f:
+#         if first_row:
+#             first_row = False
+#             continue
+#         cols = row.split(',')
+#         txid,product,side,created_at,size,size_unit,price,fee,total,price_unit = cols
+#         if side == 'BUY':
+#             buy_cur, sell_cur = product.split('-')
+#         elif side == 'SELL':
+#             sell_cur, buy_cur = product.split('-')
+#         else:
+#             logger.warning('Unknown side {}'.format(side))
+#             continue
+#
+#         if size_unit == buy_cur:
+#             buy_qty = float(size)
+#             sell_qty = -1 * float(total)
+#         elif size_unit == sell_cur:
+#             buy_qty = float(total)
+#             sell_qty = float(size)
+#         else:
+#             logger.warning('Unknown size_unit {}'.format(size_unit))
+#             continue
+#         dt = dateutil.parser.parse(created_at)
+#
+#         try:
+#             buy_price = prices.get_price(buy_cur, dt)
+#             buy_dollar = buy_qty * buy_price
+#             sell_price = prices.get_price(sell_cur, dt)
+#             sell_dollar = sell_qty * sell_price
+#         except Exception as e:
+#             logger.warning('Dropping coinbase pro order {}'.format(row))
+#             continue
+#
+#         txs.append({
+#             'dollar': sell_dollar,
+#             'direction': 'out',
+#             'price': sell_price,
+#             'amount': sell_qty,
+#             'currency': sell_cur,
+#             'timestamp': dt.timestamp(),
+#             'notes': 'coinbase_pro order'
+#         })
+#
+#         txs.append({
+#             'dollar': buy_dollar,
+#             'direction': 'in',
+#             'price': buy_price,
+#             'amount': buy_qty,
+#             'currency': buy_cur,
+#             'timestamp': dt.timestamp(),
+#             'notes': 'coinbase_pro order'
+#         })
+#     return txs
+
+
 def parse_trezor(path):
     f = maybe_open(path)
     if f is None: return []
-    currency = path.split('/')[-1].split('_')[0]
+    currency = path.split('_')[-1].split('.')[0].upper()
     first_row = True
     txs = []
     for row in f:
         if first_row:
             first_row = False
             continue
-        date,time,tx_id,address,direction,amount,total,fee,balance = row.split(',')
+        date,time,tx_id,address,direction,amount,total,balance = row.split(',')
         direction = direction.lower()
+        if direction != 'in' and direction != 'out':
+            logger.info('Unknown direction {}'.format(direction))
+            continue
         amount = abs(float(total))
         dt = date.split('-')
         dt.extend(time.split(':'))
         dt = [int(x) for x in dt]
         dt = datetime.datetime(*dt)
+        if dt.year > target_year: continue
 
         try:
             price = prices.get_price(currency, dt)
         except Exception as e:
-            logging.warn(e)
+            logger.warning(e)
             continue
 
         dollar = price * amount
@@ -612,7 +906,7 @@ def parse_dash_core(path):
 
         confirmed,date,taip,label,address,amount,tx_id = cols
         if not ('Sent' in taip or 'Received' in taip or 'PrivateSend' == taip):
-            logging.info('Ignoring tx type %s' % taip)
+            logger.info('Ignoring tx type %s' % taip)
             continue
         if 'Sent' in taip or 'PrivateSend' == taip:
             direction = 'out'
@@ -628,7 +922,7 @@ def parse_dash_core(path):
         try:
             price = prices.get_price(currency, dt)
         except Exception as e:
-            logging.warn(e)
+            logger.warning(e)
             continue
 
         dollar = price * amount
@@ -659,7 +953,7 @@ def parse_coin_tracker(path):
         type,buy_amt,buy_cur,sell_amt,sell_cur,fee_amt,fee_cur,exchange,group,_,date = row.split('\t')
         date = date.replace('\n', '')
         dt = datetime.datetime.strptime(date, '%Y-%m-%d %H:%M:%S')
-        if dt > cutoff_year:
+        if dt >= cutoff_year:
             maybe_print('Skipping row %d because date %s is out of range' % (i, date))
             continue
         if group == 'Margin' and ignore_margins:
@@ -677,8 +971,15 @@ def parse_coin_tracker(path):
         #     if fee_cur == sell_cur:
         #         sell_amt -= fee_amt
         if type == 'Trade':
-            sell_price = prices.get_price(sell_cur, dt)
-            buy_price = prices.get_price(buy_cur, dt)
+            try:
+                sell_price = prices.get_price(sell_cur, dt)
+            except Exception as e:
+                sell_price = None
+            try:
+                buy_price = prices.get_price(buy_cur, dt)
+            except Exception as e:
+                sell_price = None
+
             if buy_price is None and sell_price is None:
                 print('Cannot handle row, saving %s' % row)
                 failed_rows.append(row)
@@ -722,8 +1023,11 @@ def parse_coin_tracker(path):
         elif type == 'Deposit':
             # not taxable event
             pass
-        elif type == 'Income' or type == 'Mining':
-            buy_price = prices.get_price(buy_cur, dt)
+        elif type == 'Income' or type == 'Mining' or type == 'Gift':
+            try:
+                buy_price = prices.get_price(buy_cur, dt)
+            except Exception as e:
+                buy_price = None
             if buy_price is None:
                 print('Cannot get price for %s on %s for Income, using 0 as price for cost_basis' % (buy_cur, dt))
                 buy_price = 0
@@ -757,9 +1061,36 @@ def parse_coin_tracker(path):
                 'timestamp': dt.timestamp(),
                 'notes': 'gsheet'
             })
-        elif type == 'Lost':
-            # fees? ocean?
-            pass
+        elif type == 'Lost' or type == 'Stolen':
+            # treat as a trade for 0 USD
+            sell_price = 0
+            buy_price = 1
+            buy_dollar = 0
+            sell_dollar = 0
+
+            buy_dir = 'in'
+            sell_dir = 'out'
+            txs.append({
+                'dollar': sell_dollar,
+                'direction': sell_dir,
+                'price': sell_price,
+                'amount': sell_amt,
+                'currency': sell_cur,
+                'timestamp': dt.timestamp(),
+                'notes': 'gsheet order'
+            })
+
+            txs.append({
+                'dollar': buy_dollar,
+                'direction': buy_dir,
+                'price': buy_price,
+                'amount': buy_amt,
+                'currency': buy_cur,
+                'timestamp': dt.timestamp(),
+                'notes': 'gsheet order'
+            })
+        else:
+            print('Unknown trade type: {}'.format(type))
 
     return txs, failed_rows
 
@@ -778,7 +1109,7 @@ def parse_coin_tracker_custom(path):
             continue
         date = date.replace('\n', '')
         dt = datetime.datetime.strptime(date, '%d.%m.%Y %H:%M')
-        if dt > cutoff_year:
+        if dt >= cutoff_year:
             maybe_print('Skipping row %d because date %s is out of range' % (i, date))
             continue
         if buy_cur == 'STR': buy_cur = 'XLM'
@@ -869,5 +1200,118 @@ def parse_coin_tracker_custom(path):
         elif type == 'Lost':
             # fees? ocean?
             pass
+        else:
+            logger.warning('Unknown row type: %s ' % type)
+
+    return txs, failed_rows
+
+
+def parse_coin_tracker_custom_2(path):
+    f = maybe_open(path)
+    if f is None: return []
+    f.__next__()
+    lines = f.readlines()
+    txs = []
+    failed_rows = []
+    for i, row in enumerate(lines):
+        _, type,buy_amt,buy_cur,sell_amt,sell_cur,fee_amt, fee_cur, exchange,_,comment,date = row.split('\t')
+        if 'ignore' in comment.lower():
+            maybe_print('Ignoring row: %s' % row)
+            continue
+        date = date.replace('\n', '')
+        dt = datetime.datetime.strptime(date, '%Y-%m-%d %H:%M:%S')
+        if dt >= cutoff_year:
+            maybe_print('Skipping row %d because date %s is out of range' % (i, date))
+            continue
+        if buy_cur == 'STR': buy_cur = 'XLM'
+        if sell_cur == 'STR': sell_cur = 'XLM'
+        buy_amt = float(buy_amt) if len(buy_amt) > 0 and buy_amt != '-' else 0
+        sell_amt = float(sell_amt) if len(sell_amt) > 0 and sell_amt != '-' else 0
+        if type == 'Trade':
+            sell_price = prices.get_price(sell_cur, dt)
+            buy_price = prices.get_price(buy_cur, dt)
+            if buy_price is None and sell_price is None:
+                print('Cannot handle row, saving %s' % row)
+                failed_rows.append(row)
+                continue
+            if buy_price is None:
+                buy_dollar = sell_price * sell_amt
+                buy_price = buy_dollar / buy_amt
+            else:
+                buy_dollar = buy_price * buy_amt
+            if sell_price is None:
+                sell_dollar = buy_price * buy_amt
+                sell_price = sell_dollar / sell_amt
+            else:
+                sell_dollar = sell_price * sell_amt
+
+            buy_dir = 'in'
+            sell_dir = 'out'
+            txs.append({
+                'dollar': sell_dollar,
+                'direction': sell_dir,
+                'price': sell_price,
+                'amount': sell_amt,
+                'currency': sell_cur,
+                'timestamp': dt.timestamp(),
+                'notes': 'gsheet order'
+            })
+
+            txs.append({
+                'dollar': buy_dollar,
+                'direction': buy_dir,
+                'price': buy_price,
+                'amount': buy_amt,
+                'currency': buy_cur,
+                'timestamp': dt.timestamp(),
+                'notes': 'gsheet order'
+            })
+
+        elif type == 'Withdrawal':
+            # not taxable event
+            pass
+        elif type == 'Deposit':
+            # not taxable event
+            pass
+        elif type == 'Income' or type == 'Mining':
+            buy_price = prices.get_price(buy_cur, dt)
+            if buy_price is None:
+                print('Cannot get price for %s on %s for Income, using 0 as price for cost_basis' % (buy_cur, dt))
+                buy_price = 0
+            buy_dollar = buy_price * buy_amt
+            buy_dir = 'in'
+            txs.append({
+                'dollar': buy_dollar,
+                'direction': buy_dir,
+                'price': buy_price,
+                'amount': buy_amt,
+                'currency': buy_cur,
+                'timestamp': dt.timestamp(),
+                'notes': 'gsheet'
+            })
+
+        elif type == 'Spend':
+            # we are not doing capital gains / losses for this one
+            sell_price = prices.get_price(sell_cur, dt)
+            if sell_price is None:
+                print('Cannot handle row, saving %s' % row)
+                failed_rows.append(row)
+                continue
+            sell_dollar = sell_price * sell_amt
+            sell_dir = 'out'
+            txs.append({
+                'dollar': sell_dollar,
+                'direction': sell_dir,
+                'price': sell_price,
+                'amount': sell_amt,
+                'currency': sell_cur,
+                'timestamp': dt.timestamp(),
+                'notes': 'gsheet'
+            })
+        elif type == 'Lost':
+            # fees? ocean?
+            pass
+        else:
+            logger.warning('Unknown row type: %s ' % type)
 
     return txs, failed_rows

@@ -5,18 +5,25 @@ from reportlab.lib.pagesizes import letter
 from glob import glob
 import csv
 from tqdm import tqdm
-from credentials.credentials import name, ssn
+from credentials.credentials import name, ssn, initials
 from math import modf
 import sys
+import os
 import datetime
 from config import target_year, likekind_threshold
 
-target_folder = ''
-if len(target_folder) == 0:
-    print('please set target_folder')
+run_folder = ''
+
+if len(run_folder) == 0:
+    print('please set run_folder')
     sys.exit(1)
 
+target_folder = './data/%s/%s/%s' % (initials, target_year, run_folder)
 print('using %s as target_folder' % target_folder)
+
+intermediate_folder = '%s/intermediate-8824' % target_folder
+if not os.path.exists(intermediate_folder):
+    os.makedirs(intermediate_folder)
 
 merger = PdfFileMerger()
 reader = csv.reader(open('%s/likekind.csv' % target_folder,'r'))
@@ -158,7 +165,8 @@ def make_8824(row):
     page.mergePage(text1.getPage(0))
     output.addPage(page)
 
-    filename = '%s/intermediate-8824/%s-%s-%s-%s.pdf' % (target_folder, row[swap_idx].replace('/', '-'),row[rcvd_idx], row[rlqd_idx], datetime.datetime.now().timestamp())
+
+    filename = '%s/%s-%s-%s-%s.pdf' % (intermediate_folder, row[swap_idx].replace('/', '-'),row[rcvd_idx], row[rlqd_idx], datetime.datetime.now().timestamp())
     outputStream = open(filename, "wb")
     output.write(outputStream)
     outputStream.close()
@@ -169,9 +177,10 @@ for row in tqdm(reader):
     make_8824(row)
 
 
-g = glob('%s/intermediate-8824/*.pdf' % target_folder)
+g = glob('%s/*.pdf' % intermediate_folder)
 for path in tqdm(g):
     merger.append(PdfFileReader(open(path, 'rb')))
 
 print('Merging all %d pdfs into one' % len(g))
 merger.write("%s/8824-complete-%s.pdf" % (target_folder,datetime.datetime.now().timestamp()))
+print('Dun')
